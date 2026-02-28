@@ -118,8 +118,11 @@ export class Agent {
                     ? `[PROTOCOL: ${message.payload.type.toUpperCase()}]\n${message.payload.text}`
                     : JSON.stringify(message.payload);
 
+            const currentTime = new Date().toISOString();
+            const timePrompt = `[SYSTEM TIME ALIGNMENT: The current exact time is ${currentTime}]`;
+
             const messages: ChatMessage[] = [
-                { role: "system", content: this.systemPrompt },
+                { role: "system", content: `${this.systemPrompt}\n\n${timePrompt}` },
                 { role: "user", content: textBlock },
             ];
 

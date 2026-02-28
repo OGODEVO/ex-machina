@@ -13,6 +13,7 @@
     "dependencies": {
         "agentnet-sdk": "file:/Users/klyexy/Documents/realm/ts-sdk/agentnet-sdk",
         "dotenv": "^16.4.7",
+        "playwright": "^1.58.2",
         "yaml": "^2.8.2"
     },
     "devDependencies": {

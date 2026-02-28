@@ -8,6 +8,7 @@ import { markTaskDoneTool, askQuestionTool, reportErrorTool } from "./tools/work
 import { chatWithAgentTool, discoverAgentsTool } from "./tools/sharedTools.js";
 import { searchWebTool, deepSearchTool } from "./tools/searchTools.js";
 import { createShellTool } from "./tools/terminalTools.js";
+import { scrapePageTool, browserActionTool, closeBrowser } from "./tools/browserTools.js";
 import type { ToolSpec } from "./tools/registry.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -65,8 +66,8 @@ async function main() {
         id: "agent3",
         name: "Agent 3",
         systemPrompt: loadPrompt("agent3.txt"),
-        capabilities: ["review", "critique"],
-        tools: buildWorkerTools("agent3"),
+        capabilities: ["review", "critique", "browser"],
+        tools: [...buildWorkerTools("agent3"), scrapePageTool, browserActionTool],
     });
 
     // Start all agents concurrently
@@ -87,6 +88,7 @@ async function main() {
             agent1.stop(),
             agent2.stop(),
             agent3.stop(),
+            closeBrowser(),
         ]);
         process.exit(0);
     });
