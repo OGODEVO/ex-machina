@@ -4,10 +4,19 @@
  * Endpoint: POST https://api.perplexity.ai/search
  * Auth: Bearer token via PERPLEXITY_API_KEY
  * Docs: https://docs.perplexity.ai/docs/search/quickstart
+ *
+ * Resilience: retry with exponential backoff + circuit breaker.
  */
 
 import type { ToolSpec } from "./registry.js";
 import { secrets } from "../config.js";
+import { withRetry, CircuitBreaker, isRetryableHttpStatus, isRetryableError } from "../resilience.js";
+
+// Shared circuit breaker for all Perplexity calls
+const perplexityBreaker = new CircuitBreaker("perplexity", {
+    failureThreshold: 4,
+    cooldownMs: 20_000,
+});
 
 interface PerplexityResult {
     title: string;
@@ -20,6 +29,46 @@ interface PerplexitySearchResponse {
     results: PerplexityResult[];
     id?: string;
     error?: { message?: string };
+}
+
+/** Shared fetch wrapper with retry + circuit breaker. */
+async function perplexityFetch(body: Record<string, unknown>, timeoutMs: number, label: string): Promise<Response> {
+    const apiKey = secrets.perplexityApiKey;
+
+    return perplexityBreaker.call(() =>
+        withRetry(
+            async () => {
+                const res = await fetch("https://api.perplexity.ai/search", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${apiKey}`,
+                    },
+                    body: JSON.stringify(body),
+                    signal: AbortSignal.timeout(timeoutMs),
+                });
+
+                if (!res.ok) {
+                    const errText = await res.text().catch(() => "unknown");
+                    const err = new Error(`Search API error (${res.status}): ${errText}`);
+                    (err as any).httpStatus = res.status;
+                    throw err;
+                }
+
+                return res;
+            },
+            {
+                maxRetries: 2,
+                baseDelayMs: 1_500,
+                maxDelayMs: 10_000,
+                label,
+                retryIf: (err) => {
+                    if (err.httpStatus && isRetryableHttpStatus(err.httpStatus)) return true;
+                    return isRetryableError(err);
+                },
+            }
+        )
+    );
 }
 
 /**
@@ -49,8 +98,7 @@ export const searchWebTool: ToolSpec = {
         required: ["query"],
     },
     execute: async (args: { query: string; maxResults?: number; country?: string }, _ctx) => {
-        const apiKey = secrets.perplexityApiKey;
-        if (!apiKey) {
+        if (!secrets.perplexityApiKey) {
             return "Error: PERPLEXITY_API_KEY is not set. Cannot perform web search.";
         }
 
@@ -62,22 +110,9 @@ export const searchWebTool: ToolSpec = {
         if (args.country) body.country = args.country;
 
         try {
-            const res = await fetch("https://api.perplexity.ai/search", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${apiKey}`,
-                },
-                body: JSON.stringify(body),
-                signal: AbortSignal.timeout(30_000), // 30s timeout
-            });
-
-            if (!res.ok) {
-                const errText = await res.text().catch(() => "unknown");
-                return `Search API error (${res.status}): ${errText}`;
-            }
-
+            const res = await perplexityFetch(body, 30_000, "searchWeb");
             const data = (await res.json()) as PerplexitySearchResponse;
+
             if (data.error?.message) {
                 return `Search API error: ${data.error.message}`;
             }
@@ -86,7 +121,6 @@ export const searchWebTool: ToolSpec = {
                 return `No results found for: "${args.query}"`;
             }
 
-            // Format results for the LLM to digest
             const formatted = data.results.map((r, i) => {
                 const date = r.date ? ` (${r.date})` : "";
                 const snippet = r.snippet
@@ -97,9 +131,8 @@ export const searchWebTool: ToolSpec = {
 
             return `Search results for "${args.query}" (${data.results.length} results):\n\n${formatted}`;
         } catch (err: any) {
-            if (err.name === "TimeoutError") {
-                return "Search timed out after 30 seconds. Try a simpler query.";
-            }
+            if (err.message?.includes("circuit-breaker")) return err.message;
+            if (err.name === "TimeoutError") return "Search timed out. Try a simpler query.";
             return `Search failed: ${err.message}`;
         }
     },
@@ -129,8 +162,7 @@ export const deepSearchTool: ToolSpec = {
         required: ["queries"],
     },
     execute: async (args: { queries: string[]; maxResultsPerQuery?: number }, _ctx) => {
-        const apiKey = secrets.perplexityApiKey;
-        if (!apiKey) {
+        if (!secrets.perplexityApiKey) {
             return "Error: PERPLEXITY_API_KEY is not set. Cannot perform web search.";
         }
 
@@ -139,28 +171,18 @@ export const deepSearchTool: ToolSpec = {
         }
 
         try {
-            const res = await fetch("https://api.perplexity.ai/search", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${apiKey}`,
-                },
-                body: JSON.stringify({
+            const res = await perplexityFetch(
+                {
                     query: args.queries,
                     max_results: args.maxResultsPerQuery ?? 3,
                     max_tokens_per_page: 1024,
-                }),
-                signal: AbortSignal.timeout(60_000), // 60s for multi-query
-            });
-
-            if (!res.ok) {
-                const errText = await res.text().catch(() => "unknown");
-                return `Search API error (${res.status}): ${errText}`;
-            }
+                },
+                60_000,
+                "deepSearch"
+            );
 
             const data = (await res.json()) as { results: PerplexityResult[][] };
 
-            // Format grouped results per query
             const formatted = args.queries.map((q, qi) => {
                 const queryResults = data.results[qi] || [];
                 if (queryResults.length === 0) return `## Query ${qi + 1}: "${q}"\nNo results found.`;
@@ -175,9 +197,8 @@ export const deepSearchTool: ToolSpec = {
 
             return `Deep search results (${args.queries.length} queries):\n\n${formatted}`;
         } catch (err: any) {
-            if (err.name === "TimeoutError") {
-                return "Deep search timed out after 60 seconds. Try fewer queries.";
-            }
+            if (err.message?.includes("circuit-breaker")) return err.message;
+            if (err.name === "TimeoutError") return "Deep search timed out. Try fewer queries.";
             return `Deep search failed: ${err.message}`;
         }
     },
