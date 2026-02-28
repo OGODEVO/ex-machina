@@ -11,6 +11,7 @@ export interface ProtocolMessage {
     type: TaskStatus;
     text: string;           // Human-readable explanation
     assignee?: string;      // Who the task is assigned to (e.g. "agent1")
+    fromAgent?: string;     // Who sent this message (especially useful in peer chats)
     metadata?: Record<string, unknown>; // Any extra data (like error logs)
 }
 
@@ -27,8 +28,8 @@ export function isProtocolMessage(payload: unknown): payload is ProtocolMessage 
 /**
  * Wrap a standard human message into a generic 'chat' protocol message.
  */
-export function createChat(text: string): ProtocolMessage {
-    return { type: "chat", text };
+export function createChat(text: string, fromAgent?: string): ProtocolMessage {
+    return { type: "chat", text, fromAgent };
 }
 
 /**

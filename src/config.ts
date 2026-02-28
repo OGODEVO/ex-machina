@@ -9,6 +9,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // ── Secrets from .env ──
 export const secrets = {
     openaiApiKey: process.env.OPENAI_API_KEY ?? "",
+    anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
+    novitaApiKey: process.env.NOVITA_API_KEY ?? "",
     perplexityApiKey: process.env.PERPLEXITY_API_KEY ?? "",
     rscToken: process.env.RSC_TOKEN ?? "",
     natsUrl: process.env.NATS_URL ?? "nats://localhost:4222",

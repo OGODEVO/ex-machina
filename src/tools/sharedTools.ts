@@ -45,8 +45,8 @@ export const chatWithAgentTool: ToolSpec = {
             args.targetAgentId
         );
 
-        // Use the standard internal CHAT protocol type
-        const payload = createChat(args.message);
+        // Use the standard internal CHAT protocol type, stamping who it's from
+        const payload = createChat(args.message, ctx.agentId);
         await ctx.bridge.sendMessage(args.targetAgentId, peerThreadId, payload);
 
         return `Message successfully sent to ${args.targetAgentId} on thread ${peerThreadId}. They will reply when ready.`;

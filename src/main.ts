@@ -16,7 +16,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const promptsDir = resolve(__dirname, "..", "prompts");
 
 function loadPrompt(filename: string): string {
-    return readFileSync(resolve(promptsDir, filename), "utf-8").trim();
+    const base = readFileSync(resolve(promptsDir, filename), "utf-8").trim();
+    // Inject current date/time context so agents aren't confused
+    const currentDate = new Date().toLocaleString("en-US", { timeZone: "America/Chicago", timeZoneName: "short" });
+    return `${base}\n\n# SYSTEM CONTEXT\nCurrent Date & Time: ${currentDate}\nUser Location: Texas, USA\n`;
 }
 
 /** Build the tools array for a worker agent, adding shell if configured in YAML. */
@@ -35,13 +38,19 @@ function buildWorkerTools(agentId: string): ToolSpec[] {
 async function main() {
     console.log("Starting Agent OS...");
 
-    // 1. Agent 0: The Orchestrator
+    const agentProfiles = `
+# AVAILABLE AGENTS
+- **Agent 1** (ID: agent1): Capabilities: [execution, coding]
+- **Agent 2** (ID: agent2): Capabilities: [research, analysis, nba-data]
+- **Agent 3** (ID: agent3): Capabilities: [review, critique, browser]
+`;
+
     const orchestrator = new Agent({
         id: secrets.orchestratorId,
         name: secrets.orchestratorName,
-        systemPrompt: loadPrompt("orchestrator.txt"),
-        capabilities: ["orchestration"],
-        tools: [assignTasksTool, answerDirectlyTool, facilitateDebateTool, chatWithAgentTool, discoverAgentsTool],
+        systemPrompt: loadPrompt("orchestrator.txt") + `\n\n${agentProfiles}`,
+        capabilities: ["orchestration", "search"],
+        tools: [assignTasksTool, answerDirectlyTool, facilitateDebateTool, chatWithAgentTool, discoverAgentsTool, searchWebTool, deepSearchTool],
     });
 
     // 2. Agent 1

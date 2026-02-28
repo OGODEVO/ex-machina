@@ -6,12 +6,13 @@
     "main": "dist/main.js",
     "scripts": {
         "dev": "tsx src/main.ts",
+        "cli": "tsx src/cli.ts",
         "build": "tsc -p tsconfig.json",
         "start": "node dist/main.js",
         "typecheck": "tsc --noEmit"
     },
     "dependencies": {
-        "agentnet-sdk": "file:/Users/klyexy/Documents/realm/ts-sdk/agentnet-sdk",
+        "agentnet-sdk": "file:/home/arinze/documents/Realm/ts-sdk/agentnet-sdk",
         "dotenv": "^16.4.7",
         "playwright": "^1.58.2",
         "yaml": "^2.8.2"

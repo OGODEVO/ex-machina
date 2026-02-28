@@ -19,8 +19,9 @@ export const answerDirectlyTool: ToolSpec = {
         },
         required: ["answer"],
     },
-    execute: async (args: { answer: string }, ctx) => {
-        return `[System] Answer ready for User: ${args.answer}`;
+    execute: async (args: { answer: string }, _ctx) => {
+        // Just return the answer — agent.ts will route it back to the CLI via ctx.reply()
+        return args.answer;
     },
 };
 
@@ -57,22 +58,57 @@ export const assignTasksTool: ToolSpec = {
         required: ["assignments"],
     },
     execute: async (args: { assignments: Array<{ agentId: string; instructions: string }> }, ctx) => {
-        if (!ctx.bridge || !ctx.threadId) {
+        if (!ctx.bridge || !ctx.threadId || !ctx.agentId) {
             throw new Error("Missing network context to send assignment messages.");
         }
 
-        let resultLog = `Dispatched ${args.assignments.length} tasks:\n`;
+        let resultLog = `Dispatched ${args.assignments.length} tasks and collected results:\n\n`;
 
-        for (const task of args.assignments) {
-            // Build a peer thread ID: mainThread::orchestrator_agent1::r1
+        const promises = args.assignments.map(async (task) => {
             const peerThreadId = NetworkBridge.buildPeerThreadId(
-                ctx.threadId, ctx.agentId, task.agentId
+                ctx.threadId!, ctx.agentId!, task.agentId
             );
 
             const payload = createAssign(task.agentId, task.instructions);
-            await ctx.bridge.sendMessage(task.agentId, peerThreadId, payload);
-            resultLog += `- Sent to ${task.agentId} on thread ${peerThreadId}: "${task.instructions}"\n`;
-        }
+            try {
+                // Send the assignment (fire-and-forget)
+                await ctx.bridge!.sendMessage(task.agentId, peerThreadId, payload);
+                console.log(`[Orchestrator] Sent task to ${task.agentId} on ${peerThreadId}, waiting for DONE...`);
+
+                // Poll the thread history waiting for a DONE or BLOCKED message from the agent
+                const timeoutMs = 300_000; // 5 minutes max
+                const pollIntervalMs = 5000;
+                const startTime = Date.now();
+
+                while (Date.now() - startTime < timeoutMs) {
+                    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+
+                    const history = await ctx.bridge!.loadThreadWindow(peerThreadId);
+                    if (history && Array.isArray(history.messages)) {
+                        // Look for the most recent DONE or BLOCKED message from the assigned agent
+                        for (let i = history.messages.length - 1; i >= 0; i--) {
+                            const msg = history.messages[i];
+                            const sender = msg.from_agent || msg.sender_id || "";
+                            if (sender === task.agentId && msg.payload && typeof msg.payload === "object") {
+                                if (msg.payload.type === "done") {
+                                    return `[Result from ${task.agentId}]:\n${msg.payload.text}\n`;
+                                }
+                                if (msg.payload.type === "blocked") {
+                                    return `[Error from ${task.agentId}]:\nTask blocked: ${msg.payload.text}\n`;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return `[Error from ${task.agentId}]:\nTask failed: TIMEOUT after 5 minutes.\n`;
+            } catch (err: any) {
+                return `[Error from ${task.agentId}]:\nTask failed: ${err.message}\n`;
+            }
+        });
+
+        const results = await Promise.all(promises);
+        resultLog += results.join("\n");
 
         return resultLog;
     },

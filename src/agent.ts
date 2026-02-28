@@ -112,17 +112,50 @@ export class Agent {
         console.log(`[${this.name}] Received message from ${message.from_agent}`);
 
         try {
-            const textBlock = typeof message.payload === "string"
+            // Include fromAgent if present so the LLM knows who is talking to them
+            let textBlock = typeof message.payload === "string"
                 ? message.payload
                 : isProtocolMessage(message.payload)
                     ? `[PROTOCOL: ${message.payload.type.toUpperCase()}]\n${message.payload.text}`
                     : JSON.stringify(message.payload);
 
+            if (typeof message.payload === "object" && message.payload !== null && "fromAgent" in message.payload) {
+                const fromStr = `[Message from: ${(message.payload as any).fromAgent}]\n`;
+                textBlock = fromStr + textBlock;
+            }
+
             const currentTime = new Date().toISOString();
             const timePrompt = `[SYSTEM TIME ALIGNMENT: The current exact time is ${currentTime}]`;
 
+            // Load thread history for context (last 10 messages)
+            let historyPrompt = "";
+            if (message.thread_id) {
+                try {
+                    const history = await this.network.loadThreadWindow(message.thread_id);
+                    if (history && Array.isArray(history.messages)) {
+                        // Take up to the last 10 messages, but EXCLUDE the current incoming message
+                        // since NATS might have already appended it to the log.
+                        // Sort by timestamp, take last 11, slice off the newest one.
+                        const pastMsgs = history.messages
+                            .sort((a: any, b: any) => a.timestamp - b.timestamp)
+                            .slice(-11, -1) // Grab the 10 messages *before* this one
+                            .map((m: any) => {
+                                const sender = m.from_agent || m.sender_id || "unknown";
+                                const text = typeof m.payload === "string" ? m.payload : JSON.stringify(m.payload);
+                                return `[${sender}]: ${text}`;
+                            }).join("\n");
+
+                        if (pastMsgs) {
+                            historyPrompt = `\n\n--- PREVIOUS THREAD MESSAGES (For Context) ---\n${pastMsgs}\n------------------------------------------`;
+                        }
+                    }
+                } catch (e) {
+                    console.log(`[${this.name}] Warning: Could not load thread history for ${message.thread_id}`);
+                }
+            }
+
             const messages: ChatMessage[] = [
-                { role: "system", content: `${this.systemPrompt}\n\n${timePrompt}` },
+                { role: "system", content: `${this.systemPrompt}\n\n${timePrompt}${historyPrompt}` },
                 { role: "user", content: textBlock },
             ];
 
@@ -168,10 +201,25 @@ export class Agent {
 
             console.log(`[${this.name}] Replying.`);
             // Always reply using the standard protocol envelope
-            await ctx.reply(createChat(finalResponse));
+            // Use safe reply — fire-and-forget messages have no reply subject
+            try {
+                await ctx.reply(createChat(finalResponse));
+            } catch (replyErr: any) {
+                if (replyErr?.code === "missing_reply_to") {
+                    // Fire-and-forget message — no one to reply to, just log and move on
+                    console.log(`[${this.name}] No reply subject (fire-and-forget). Response processed but not routed back.`);
+                } else {
+                    throw replyErr;
+                }
+            }
         } catch (error) {
             console.error(`[${this.name}] Error handling message:`, error);
-            await ctx.reply(createChat("I encountered an internal error while processing your request."));
+            try {
+                await ctx.reply(createChat("I encountered an internal error while processing your request."));
+            } catch {
+                // Fire-and-forget error reply — best effort
+                console.log(`[${this.name}] Could not send error reply (no reply subject).`);
+            }
         }
     }
 

@@ -52,6 +52,12 @@ interface OpenAIResponse {
     error?: { message?: string };
 }
 
+function resolveApiKey(baseUrl: string): string {
+    if (baseUrl.includes("anthropic.com")) return secrets.anthropicApiKey;
+    if (baseUrl.includes("novita.ai")) return secrets.novitaApiKey;
+    return secrets.openaiApiKey;
+}
+
 /**
  * Send a chat completion request with retry + circuit breaker.
  * If agentConfig is provided, it overrides the defaults with that agent's model/url/tokens.
@@ -64,13 +70,18 @@ export async function chatCompletion(
     const model = options.model ?? agentConfig?.model ?? "gpt-4o";
     const baseUrl = (options.baseUrl ?? agentConfig?.base_url ?? "https://api.openai.com/v1").replace(/\/+$/, "");
     const maxTokens = options.maxTokens ?? agentConfig?.max_tokens;
+    const apiKey = resolveApiKey(baseUrl);
 
     const body: Record<string, unknown> = {
         model,
         messages,
         temperature: options.temperature ?? 0.3,
     };
-    if (maxTokens) body.max_tokens = maxTokens;
+    // Newer OpenAI models (gpt-5.x, o-series, gpt-4.1+) require max_completion_tokens
+    if (maxTokens) {
+        const useNewParam = /^(gpt-5|gpt-4\.1|o[1-9]|o[1-9]-)/i.test(model);
+        body[useNewParam ? "max_completion_tokens" : "max_tokens"] = maxTokens;
+    }
     if (options.stop?.length) body.stop = options.stop;
     if (options.tools && options.tools.length > 0) body.tools = options.tools;
 
@@ -79,13 +90,45 @@ export async function chatCompletion(
     return breaker.call(() =>
         withRetry(
             async () => {
-                const res = await fetch(`${baseUrl}/chat/completions`, {
-                    method: "POST",
-                    headers: {
+                const isAnthropic = baseUrl.includes("anthropic.com");
+
+                let fetchUrl = `${baseUrl}/chat/completions`;
+                let fetchHeaders: Record<string, string> = {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${apiKey}`,
+                };
+                let fetchBody: Record<string, unknown> = body;
+
+                if (isAnthropic) {
+                    fetchUrl = `${baseUrl}/messages`;
+                    fetchHeaders = {
                         "Content-Type": "application/json",
-                        Authorization: `Bearer ${secrets.openaiApiKey}`,
-                    },
-                    body: JSON.stringify(body),
+                        "x-api-key": apiKey,
+                        "anthropic-version": "2023-06-01",
+                    };
+                    const sysMsgs = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
+                    const userMsgs = messages.filter((m) => m.role !== "system");
+
+                    fetchBody = {
+                        model,
+                        max_tokens: maxTokens || 4096,
+                        temperature: options.temperature ?? 0.3,
+                        system: sysMsgs || undefined,
+                        messages: userMsgs,
+                    };
+                    if (options.tools && options.tools.length > 0) {
+                        fetchBody.tools = options.tools.map((t) => ({
+                            name: t.function.name,
+                            description: t.function.description || "",
+                            input_schema: t.function.parameters || { type: "object", properties: {} },
+                        }));
+                    }
+                }
+
+                const res = await fetch(fetchUrl, {
+                    method: "POST",
+                    headers: fetchHeaders,
+                    body: JSON.stringify(fetchBody),
                     signal: AbortSignal.timeout(120_000),
                 });
 
@@ -97,10 +140,23 @@ export async function chatCompletion(
                     throw err;
                 }
 
-                const data = (await res.json()) as OpenAIResponse;
+                const data = await res.json() as any;
                 if (data.error?.message) throw new Error(`LLM error: ${data.error.message}`);
 
-                const message = data.choices?.[0]?.message;
+                if (isAnthropic) {
+                    if (data.stop_reason === "tool_use" || data.content?.some((c: any) => c.type === "tool_use")) {
+                        const tc = data.content.find((c: any) => c.type === "tool_use");
+                        return JSON.stringify({
+                            _isToolCall: true,
+                            name: tc.name,
+                            arguments: JSON.stringify(tc.input),
+                        });
+                    }
+                    return data.content?.filter((c: any) => c.type === "text").map((c: any) => c.text).join("") ?? "";
+                }
+
+                const openaiData = data as OpenAIResponse;
+                const message = openaiData.choices?.[0]?.message;
                 if (!message) throw new Error("LLM returned empty response");
 
                 // If the LLM decided to call a tool
