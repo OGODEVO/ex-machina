@@ -1,0 +1,33 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+venv/
+
+# Node.js
+node_modules/
+dist/
+build/
+.npm/
+
+# Agent OS Specific
+workspace/      # Sandboxed execution directory for Agent 1
+logs/           # Agent runtime logs (if any)
+.agentnet/      # AgentNet local state
+
+# Environment & Secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Editor & OS
+.DS_Store
+.vscode/
+.idea/

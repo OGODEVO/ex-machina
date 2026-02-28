@@ -1,0 +1,23 @@
+# ── Agent Model Configuration ──
+# Secrets (API keys) stay in .env — this file is for model routing only.
+
+orchestrator:
+  model: gpt-4o
+  base_url: https://api.openai.com/v1
+  max_tokens: 4096
+
+agent1:
+  model: gpt-4o-mini
+  base_url: https://api.openai.com/v1
+  max_tokens: 2048
+  shell_mode: strict  # strict | relaxed | open
+
+agent2:
+  model: gpt-4o
+  base_url: https://api.openai.com/v1
+  max_tokens: 4096
+
+agent3:
+  model: gpt-4o-mini
+  base_url: https://api.openai.com/v1
+  max_tokens: 2048
