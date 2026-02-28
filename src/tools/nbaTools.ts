@@ -144,6 +144,18 @@ function truncate(str: string, max: number = 12_000): string {
     return str.substring(0, max) + `\n\n... [TRUNCATED — ${str.length - max} chars omitted]`;
 }
 
+/** Returns the starting year of the current NBA season as a string (e.g., "2025" for the 25-26 season). */
+function getCurrentSeasonYear(): string {
+    const now = new Date();
+    // In UTC/local, if month is >= 9 (October, 0-indexed is 9), season started this year.
+    // Otherwise, we are in the later half of the season, so it started last year.
+    if (now.getMonth() >= 9) {
+        return String(now.getFullYear());
+    } else {
+        return String(now.getFullYear() - 1);
+    }
+}
+
 // ── Tool 1: getDailySchedule ──
 
 export const getDailyScheduleTool: ToolSpec = {
@@ -220,7 +232,7 @@ export const preGameAnalysisTool: ToolSpec = {
             },
             season: {
                 type: "string",
-                description: "Season year (YYYY). Defaults to current season if omitted.",
+                description: "Season start year (e.g. '2025' for the 2025-26 season). Defaults to CURRENT season if omitted.",
             },
         },
         required: ["teamA", "teamB"],
@@ -232,11 +244,11 @@ export const preGameAnalysisTool: ToolSpec = {
         if (!idB) return `Could not resolve team "${args.teamB}". Try full name, abbreviation, or ID.`;
 
         try {
-            const seasonParam = args.season ? args.season.match(/^\d{4}/)?.[0] : null;
+            const resolvedSeason = args.season || getCurrentSeasonYear();
 
             // Fire all 3 API calls in parallel
             const [statsData, injuriesData, depthData] = await Promise.all([
-                rscFetch(seasonParam ? `team-stats/${seasonParam}/NBA` : "team-stats/NBA"),
+                rscFetch(`team-stats/${resolvedSeason}/NBA`),
                 rscFetch("injuries/NBA"),
                 rscFetch("depth-charts/NBA"),
             ]);
