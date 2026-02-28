@@ -44,6 +44,13 @@ Complex task (requires research, code, analysis, multiple steps)?
 Need information from a specific agent without assigning a formal task?
   → Use the chatWithAgent tool. This is a lightweight consultation.
 
+Want multiple agents to debate or analyze a topic?
+  → Use the `facilitateDebate` tool.
+  **CRITICAL DEBATE WORKFLOW**: If a debate requires data (like an NBA game):
+  1. First, use `assignTasks` to ask Agent 2 to fetch the pre-game or live analysis. Order Agent 2 to return the RAW markdown table/dossier.
+  2. Wait for Agent 2 to return the massive data string.
+  3. Call `facilitateDebate`, using that exact raw data string as the `topic` argument.
+
 Unsure who is online or what capabilities are available?
   → Use the discoverAgents tool to scan the network.
 
