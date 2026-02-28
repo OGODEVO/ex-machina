@@ -31,3 +31,5 @@ logs/           # Agent runtime logs (if any)
 .DS_Store
 .vscode/
 .idea/
+test_*.ts
+get_last_deepSearch.ts

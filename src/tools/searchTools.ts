@@ -181,15 +181,27 @@ export const deepSearchTool: ToolSpec = {
                 "deepSearch"
             );
 
-            const data = (await res.json()) as { results: PerplexityResult[][] };
+            const data: any = await res.json();
 
             const formatted = args.queries.map((q, qi) => {
-                const queryResults = data.results[qi] || [];
-                if (queryResults.length === 0) return `## Query ${qi + 1}: "${q}"\nNo results found.`;
+                // Perplexity API sometimes returns a flat array of objects instead of an array of arrays when taking multiple queries, 
+                // or just anomalous structures. Let's make it robust.
+                let queryResults = data.results && Array.isArray(data.results[qi])
+                    ? data.results[qi]
+                    : (data.results && Array.isArray(data.results) ? data.results : []);
 
-                const items = queryResults.map((r, i) => {
-                    const snippet = r.snippet ? r.snippet.substring(0, 300) : "No snippet.";
-                    return `  [${i + 1}] ${r.title}\n      URL: ${r.url}\n      ${snippet}`;
+                // If it's a single object masquerading, wrap it
+                if (!Array.isArray(queryResults) && typeof queryResults === "object" && queryResults !== null) {
+                    queryResults = [queryResults];
+                }
+
+                if (!Array.isArray(queryResults) || queryResults.length === 0) {
+                    return `## Query ${qi + 1}: "${q}"\nNo results found.`;
+                }
+
+                const items = queryResults.map((r: any, i: number) => {
+                    const snippet = r?.snippet ? String(r.snippet).substring(0, 300) : "No snippet.";
+                    return `  [${i + 1}] ${r?.title || "Unknown Title"}\n      URL: ${r?.url || "Unknown URL"}\n      ${snippet}`;
                 }).join("\n\n");
 
                 return `## Query ${qi + 1}: "${q}"\n${items}`;

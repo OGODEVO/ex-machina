@@ -162,14 +162,16 @@ export class Agent {
             // Let the agent loop until it returns actual text
             let finalResponse = "";
             const toolsApi = this.toolRegistry.hasTools() ? this.toolRegistry.getOpenAITools() : undefined;
-            const MAX_TOOL_ROUNDS = 10;
+            const MAX_TOOL_ROUNDS = 20;
             let round = 0;
 
             while (!finalResponse) {
                 round++;
                 if (round > MAX_TOOL_ROUNDS) {
-                    finalResponse = "I hit my tool execution limit. Here is what I have so far.";
-                    break;
+                    messages.push({
+                        role: "system",
+                        content: "SYSTEM: You have reached the maximum allowed tool execution rounds. You MUST immediately call the `markTaskDone` tool or `reportError` tool with the information you have gathered so far. You are not allowed to use any other tools.",
+                    });
                 }
                 console.log(`[${this.name}] Thinking... (round ${round}/${MAX_TOOL_ROUNDS})`);
                 const responseText = await chatCompletion(messages, this.modelConfig, {
@@ -192,14 +194,31 @@ export class Agent {
 
                     // Append the tool call and the result to the conversation context
                     messages.push({ role: "assistant", content: `(I called tool ${tc.name} with ${tc.arguments})` });
-                    messages.push({ role: "user", content: `Tool Result: ${toolResult}\nBased on this result, you must output a direct text response to continue.` });
+                    messages.push({ role: "user", content: `Tool Result: ${toolResult}\nEvaluate this result. If you need more information, call another tool. If you have finished your task, call the appropriate tool to complete it (e.g., markTaskDone). If you are chatting, you may respond directly.` });
                 } else {
                     // 2. The LLM returned raw text
                     finalResponse = responseText;
                 }
             }
 
-            console.log(`[${this.name}] Replying.`);
+            console.log(`[${this.name}] Processing final response.`);
+
+            // CODE ENFORCEMENT: If this is a peer thread and we are talking to the Orchestrator,
+            // intercept the raw text and force it into a markTaskDone payload.
+            if (message.thread_id && (
+                (message.thread_id.includes("orchestrator") && message.thread_id.includes("agent")) ||
+                message.thread_id.startsWith("debate_")
+            )) {
+                console.log(`[${this.name}] Intercepted raw text on assignment thread. Auto-converting to DONE payload.`);
+                await this.toolRegistry.executeTool("markTaskDone", JSON.stringify({ resultSummary: finalResponse }), {
+                    agentId: this.id,
+                    bridge: this.network,
+                    threadId: message.thread_id,
+                });
+                return; // Exit successfully
+            }
+
+            // Otherwise, route as normal chat
             // Always reply using the standard protocol envelope
             // Use safe reply — fire-and-forget messages have no reply subject
             try {

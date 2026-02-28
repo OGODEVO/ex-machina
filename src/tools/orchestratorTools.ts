@@ -91,7 +91,6 @@ export const assignTasksTool: ToolSpec = {
                             const sender = msg.from_username || msg.from_agent || msg.sender_id || "";
 
                             // Debug logging to see what messages are flying by
-                            console.log(`[Orchestrator Polling] Found msg from '${sender}' on thread. Payload type: ${typeof msg.payload}`);
 
                             let parsedPayload: any = null;
                             if (typeof msg.payload === "string") {
