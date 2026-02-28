@@ -91,14 +91,21 @@ export const assignTasksTool: ToolSpec = {
                             const sender = msg.from_username || msg.from_agent || msg.sender_id || "";
 
                             // Debug logging to see what messages are flying by
-                            console.log(`[Orchestrator Polling] Found msg from '${sender}' on thread. Payload type: ${msg.payload?.type}`);
+                            console.log(`[Orchestrator Polling] Found msg from '${sender}' on thread. Payload type: ${typeof msg.payload}`);
 
-                            if (sender === task.agentId && msg.payload && typeof msg.payload === "object") {
-                                if (msg.payload.type === "done") {
-                                    return `[Result from ${task.agentId}]:\n${msg.payload.text}\n`;
+                            let parsedPayload: any = null;
+                            if (typeof msg.payload === "string") {
+                                try { parsedPayload = JSON.parse(msg.payload); } catch (e) { }
+                            } else if (typeof msg.payload === "object") {
+                                parsedPayload = msg.payload;
+                            }
+
+                            if (parsedPayload) {
+                                if (parsedPayload.type === "done") {
+                                    return `[Result from ${task.agentId}]:\n${parsedPayload.text}\n`;
                                 }
-                                if (msg.payload.type === "blocked") {
-                                    return `[Error from ${task.agentId}]:\nTask blocked: ${msg.payload.text}\n`;
+                                if (parsedPayload.type === "blocked") {
+                                    return `[Error from ${task.agentId}]:\nTask blocked: ${parsedPayload.text}\n`;
                                 }
                             }
                         }
@@ -207,13 +214,22 @@ export const facilitateDebateTool: ToolSpec = {
                                 const msg = history.messages[j];
                                 const msgSender = msg.from_username || msg.from_agent || msg.sender_id || "";
 
-                                if (msgSender === speaker && msg.payload && typeof msg.payload === "object") {
-                                    if (msg.payload.type === "done") {
-                                        turnText = msg.payload.text || "(Empty argument)";
+                                // Debate threads are still isolated peer-to-peer per speaker request
+
+                                let parsedPayload: any = null;
+                                if (typeof msg.payload === "string") {
+                                    try { parsedPayload = JSON.parse(msg.payload); } catch (e) { }
+                                } else if (typeof msg.payload === "object") {
+                                    parsedPayload = msg.payload;
+                                }
+
+                                if (parsedPayload) {
+                                    if (parsedPayload.type === "done") {
+                                        turnText = parsedPayload.text || "(Empty argument)";
                                         break;
                                     }
-                                    if (msg.payload.type === "blocked") {
-                                        turnText = `(Agent blocked: ${msg.payload.text})`;
+                                    if (parsedPayload.type === "blocked") {
+                                        turnText = `(Agent blocked: ${parsedPayload.text})`;
                                         break;
                                     }
                                 }
