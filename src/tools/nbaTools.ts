@@ -232,9 +232,11 @@ export const preGameAnalysisTool: ToolSpec = {
         if (!idB) return `Could not resolve team "${args.teamB}". Try full name, abbreviation, or ID.`;
 
         try {
+            const seasonParam = args.season ? args.season.match(/^\d{4}/)?.[0] : null;
+
             // Fire all 3 API calls in parallel
             const [statsData, injuriesData, depthData] = await Promise.all([
-                rscFetch(args.season ? `team-stats/${args.season}/NBA` : "team-stats/NBA"),
+                rscFetch(seasonParam ? `team-stats/${seasonParam}/NBA` : "team-stats/NBA"),
                 rscFetch("injuries/NBA"),
                 rscFetch("depth-charts/NBA"),
             ]);

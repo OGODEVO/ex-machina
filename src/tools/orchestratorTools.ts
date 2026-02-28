@@ -88,7 +88,11 @@ export const assignTasksTool: ToolSpec = {
                         // Look for the most recent DONE or BLOCKED message from the assigned agent
                         for (let i = history.messages.length - 1; i >= 0; i--) {
                             const msg = history.messages[i];
-                            const sender = msg.from_agent || msg.sender_id || "";
+                            const sender = msg.from_username || msg.from_agent || msg.sender_id || "";
+
+                            // Debug logging to see what messages are flying by
+                            console.log(`[Orchestrator Polling] Found msg from '${sender}' on thread. Payload type: ${msg.payload?.type}`);
+
                             if (sender === task.agentId && msg.payload && typeof msg.payload === "object") {
                                 if (msg.payload.type === "done") {
                                     return `[Result from ${task.agentId}]:\n${msg.payload.text}\n`;
@@ -184,16 +188,46 @@ export const facilitateDebateTool: ToolSpec = {
                 }
 
                 try {
-                    const response = await ctx.bridge.requestMessage(
-                        speaker,
-                        debateThreadId,
-                        createAssign(speaker, prompt),
-                        180_000
-                    );
+                    // Send the debate prompt (fire-and-forget)
+                    await ctx.bridge.sendMessage(speaker, debateThreadId, createAssign(speaker, prompt));
+                    console.log(`[Orchestrator] Sent debate turn to ${speaker}, waiting for DONE...`);
 
-                    const text = extractText(response) || "(No response)";
-                    transcript += `**${speaker.toUpperCase()}**:\n${text}\n\n`;
-                    conversationHistory += `\n[${speaker}]: ${text}\n\n`;
+                    // Poll thread history waiting for the agent to finish their turn
+                    const timeoutMs = 180_000; // 3 minutes per turn
+                    const pollIntervalMs = 5000;
+                    const startTime = Date.now();
+                    let turnText = null;
+
+                    while (Date.now() - startTime < timeoutMs) {
+                        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+
+                        const history = await ctx.bridge.loadThreadWindow(debateThreadId);
+                        if (history && Array.isArray(history.messages)) {
+                            for (let j = history.messages.length - 1; j >= 0; j--) {
+                                const msg = history.messages[j];
+                                const msgSender = msg.from_username || msg.from_agent || msg.sender_id || "";
+
+                                if (msgSender === speaker && msg.payload && typeof msg.payload === "object") {
+                                    if (msg.payload.type === "done") {
+                                        turnText = msg.payload.text || "(Empty argument)";
+                                        break;
+                                    }
+                                    if (msg.payload.type === "blocked") {
+                                        turnText = `(Agent blocked: ${msg.payload.text})`;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (turnText !== null) break;
+                    }
+
+                    if (turnText === null) {
+                        throw new Error("TIMEOUT waiting for debate turn");
+                    }
+
+                    transcript += `**${speaker.toUpperCase()}**:\n${turnText}\n\n`;
+                    conversationHistory += `\n[${speaker}]: ${turnText}\n\n`;
                 } catch (err: any) {
                     transcript += `**${speaker.toUpperCase()}** failed to respond: ${err.message}\n`;
                     aborted = true;

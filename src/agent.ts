@@ -140,7 +140,7 @@ export class Agent {
                             .sort((a: any, b: any) => a.timestamp - b.timestamp)
                             .slice(-11, -1) // Grab the 10 messages *before* this one
                             .map((m: any) => {
-                                const sender = m.from_agent || m.sender_id || "unknown";
+                                const sender = m.from_username || m.from_agent || m.sender_id || "unknown";
                                 const text = typeof m.payload === "string" ? m.payload : JSON.stringify(m.payload);
                                 return `[${sender}]: ${text}`;
                             }).join("\n");
