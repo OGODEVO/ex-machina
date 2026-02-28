@@ -77,3 +77,104 @@ export const assignTasksTool: ToolSpec = {
         return resultLog;
     },
 };
+
+/**
+ * Tool: facilitateDebate
+ * Coordinates a multi-round debate or discussion between N agents (2-4).
+ * Agents speak in round-robin order. The Orchestrator waits for the full transcript.
+ */
+export const facilitateDebateTool: ToolSpec = {
+    name: "facilitateDebate",
+    description: "Facilitate a structured debate between 2-4 agents on a specific topic. Agents speak in round-robin order for the specified number of rounds. Returns the full transcript.",
+    parameters: {
+        type: "object",
+        properties: {
+            topic: {
+                type: "string",
+                description: "The topic, statement, or research material they should debate.",
+            },
+            agents: {
+                type: "array",
+                items: {
+                    type: "string",
+                    enum: ["agent1", "agent2", "agent3"],
+                },
+                description: "Array of 2-4 agent IDs to participate, in speaking order. Example: ['agent1', 'agent3'] or ['agent1', 'agent2', 'agent3'].",
+            },
+            rounds: {
+                type: "number",
+                description: "How many full rounds (1 to 5). Each round gives every agent one turn to speak.",
+            },
+        },
+        required: ["topic", "agents", "rounds"],
+    },
+    execute: async (args: { topic: string; agents: string[]; rounds: number }, ctx) => {
+        if (!ctx.bridge || !ctx.threadId) {
+            throw new Error("Missing network context.");
+        }
+
+        const agents = args.agents;
+        if (agents.length < 2) return "Error: Need at least 2 agents for a debate.";
+        if (agents.length > 4) return "Error: Maximum 4 agents per debate.";
+        if (new Set(agents).size !== agents.length) return "Error: Duplicate agents not allowed.";
+
+        const rounds = Math.max(1, Math.min(5, args.rounds));
+        const debateThreadId = `debate_${Date.now()}`;
+
+        let transcript = `DEBATE TOPIC: ${args.topic}\nPARTICIPANTS: ${agents.join(", ")}\nROUNDS: ${rounds}\n\n`;
+        let conversationHistory = `You are participating in a formal debate with ${agents.length} participants. The topic is: ${args.topic}\n\n`;
+
+        console.log(`[Orchestrator] Starting ${agents.length}-agent debate on thread ${debateThreadId}`);
+
+        let aborted = false;
+
+        for (let r = 1; r <= rounds && !aborted; r++) {
+            transcript += `--- ROUND ${r} ---\n`;
+            console.log(`[Orchestrator] Debate Round ${r}/${rounds}`);
+
+            for (let i = 0; i < agents.length && !aborted; i++) {
+                const speaker = agents[i];
+                const isFirst = r === 1 && i === 0;
+                const isLast = r === rounds && i === agents.length - 1;
+                const prevSpeaker = i > 0 ? agents[i - 1] : agents[agents.length - 1];
+
+                let prompt: string;
+                if (isFirst) {
+                    prompt = `${conversationHistory}You are ${speaker}. Please provide your opening argument.`;
+                } else if (isLast) {
+                    prompt = `${conversationHistory}You are ${speaker}. Please provide your final rebuttal and closing statement.`;
+                } else {
+                    prompt = `${conversationHistory}You are ${speaker}. Please respond to ${prevSpeaker}'s last point with your rebuttal.`;
+                }
+
+                try {
+                    const response = await ctx.bridge.requestMessage(
+                        speaker,
+                        debateThreadId,
+                        createAssign(speaker, prompt),
+                        180_000
+                    );
+
+                    const text = extractText(response) || "(No response)";
+                    transcript += `**${speaker.toUpperCase()}**:\n${text}\n\n`;
+                    conversationHistory += `\n[${speaker}]: ${text}\n\n`;
+                } catch (err: any) {
+                    transcript += `**${speaker.toUpperCase()}** failed to respond: ${err.message}\n`;
+                    aborted = true;
+                }
+            }
+        }
+
+        return `Debate finished. Here is the full transcript. Read it carefully and summarize the outcome for the user.\n\n${transcript}`;
+    },
+};
+
+// Small helper to pull text out of an unknown payload wrapper
+function extractText(payload: unknown): string | null {
+    if (typeof payload === "string") return payload;
+    if (typeof payload === "object" && payload !== null && "text" in payload) {
+        return String((payload as any).text);
+    }
+    return null;
+}
+

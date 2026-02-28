@@ -3,12 +3,13 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Agent } from "./agent.js";
 import { secrets, getAgentShellMode } from "./config.js";
-import { assignTasksTool, answerDirectlyTool } from "./tools/orchestratorTools.js";
+import { assignTasksTool, answerDirectlyTool, facilitateDebateTool } from "./tools/orchestratorTools.js";
 import { markTaskDoneTool, askQuestionTool, reportErrorTool } from "./tools/workerTools.js";
 import { chatWithAgentTool, discoverAgentsTool } from "./tools/sharedTools.js";
 import { searchWebTool, deepSearchTool } from "./tools/searchTools.js";
 import { createShellTool } from "./tools/terminalTools.js";
 import { scrapePageTool, browserActionTool, closeBrowser } from "./tools/browserTools.js";
+import { getDailyScheduleTool, preGameAnalysisTool, liveGameAnalysisTool } from "./tools/nbaTools.js";
 import type { ToolSpec } from "./tools/registry.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -40,7 +41,7 @@ async function main() {
         name: secrets.orchestratorName,
         systemPrompt: loadPrompt("orchestrator.txt"),
         capabilities: ["orchestration"],
-        tools: [assignTasksTool, answerDirectlyTool, chatWithAgentTool, discoverAgentsTool],
+        tools: [assignTasksTool, answerDirectlyTool, facilitateDebateTool, chatWithAgentTool, discoverAgentsTool],
     });
 
     // 2. Agent 1
@@ -52,13 +53,13 @@ async function main() {
         tools: buildWorkerTools("agent1"),
     });
 
-    // 3. Agent 2
+    // 3. Agent 2 — Research + NBA Data
     const agent2 = new Agent({
         id: "agent2",
         name: "Agent 2",
         systemPrompt: loadPrompt("agent2.txt"),
-        capabilities: ["research", "analysis"],
-        tools: buildWorkerTools("agent2"),
+        capabilities: ["research", "analysis", "nba-data"],
+        tools: [...buildWorkerTools("agent2"), getDailyScheduleTool, preGameAnalysisTool, liveGameAnalysisTool],
     });
 
     // 4. Agent 3

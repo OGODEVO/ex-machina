@@ -10,7 +10,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export const secrets = {
     openaiApiKey: process.env.OPENAI_API_KEY ?? "",
     perplexityApiKey: process.env.PERPLEXITY_API_KEY ?? "",
-    natsUrl: process.env.NATS_URL ?? "nats://agentnet_secret_token@localhost:4222",
+    rscToken: process.env.RSC_TOKEN ?? "",
+    natsUrl: process.env.NATS_URL ?? "nats://localhost:4222",
     orchestratorId: process.env.ORCHESTRATOR_ID ?? "orchestrator_v1",
     orchestratorName: process.env.ORCHESTRATOR_NAME ?? "Orchestrator",
 } as const;
@@ -35,7 +36,7 @@ export function getAgentModelConfig(agentId: string): AgentModelConfig {
 
     // Fallback to orchestrator config
     return agentConfigs.orchestrator ?? {
-        model: "gpt-4o",
+        model: "gpt-5.1",
         base_url: "https://api.openai.com/v1",
         max_tokens: 4096,
     };
