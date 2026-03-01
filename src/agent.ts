@@ -160,12 +160,12 @@ export class Agent {
             ];
 
             // Let the agent loop until it returns actual text
-            let finalResponse = "";
+            let finalResponse: string | null = null;
             const toolsApi = this.toolRegistry.hasTools() ? this.toolRegistry.getOpenAITools() : undefined;
             const MAX_TOOL_ROUNDS = 20;
             let round = 0;
 
-            while (!finalResponse) {
+            while (finalResponse === null) {
                 round++;
                 if (round > MAX_TOOL_ROUNDS) {
                     messages.push({
@@ -188,6 +188,7 @@ export class Agent {
                         agentId: this.id,
                         bridge: this.network,
                         threadId: message.thread_id,
+                        reply: ctx.reply,
                     });
 
                     console.log(`[${this.name}] Tool ${tc.name} returned: ${toolResult}`);
@@ -222,7 +223,7 @@ export class Agent {
                 message.thread_id.startsWith("debate_")
             )) {
                 console.log(`[${this.name}] Intercepted raw text on assignment thread. Auto-converting to DONE payload.`);
-                await this.toolRegistry.executeTool("markTaskDone", JSON.stringify({ resultSummary: finalResponse }), {
+                await this.toolRegistry.executeTool("markTaskDone", JSON.stringify({ resultSummary: finalResponse || "(Empty response)" }), {
                     agentId: this.id,
                     bridge: this.network,
                     threadId: message.thread_id,
@@ -234,7 +235,7 @@ export class Agent {
             // Always reply using the standard protocol envelope
             // Use safe reply — fire-and-forget messages have no reply subject
             try {
-                await ctx.reply(createChat(finalResponse));
+                await ctx.reply(createChat(finalResponse || "(Empty response)"));
             } catch (replyErr: any) {
                 if (replyErr?.code === "missing_reply_to") {
                     // Fire-and-forget message — no one to reply to, just log and move on

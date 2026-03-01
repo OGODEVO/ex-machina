@@ -14,6 +14,7 @@ export interface ToolSpec {
 export interface ToolContext {
     agentId: string;
     // We can pass the NetworkBridge in here later if tools need to send messages
+    reply?: (payload: unknown) => Promise<string>;
     [key: string]: any;
 }
 

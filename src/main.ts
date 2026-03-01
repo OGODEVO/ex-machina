@@ -40,7 +40,7 @@ async function main() {
 
     const agentProfiles = `
 # AVAILABLE AGENTS
-- **Agent 1** (ID: agent1): Capabilities: [execution, coding]
+- **Agent 1** (ID: agent1): Capabilities: [terminal-execution, bash, python, coding]. If the user asks to run a command, install software, or execute code, you MUST use assignTasks to send it to Agent 1. Do NOT use chatWithAgent for execution tasks.
 - **Agent 2** (ID: agent2): Capabilities: [research, analysis, nba-data]
 - **Agent 3** (ID: agent3): Capabilities: [review, critique, browser]
 `;

@@ -19,9 +19,16 @@ export const answerDirectlyTool: ToolSpec = {
         },
         required: ["answer"],
     },
-    execute: async (args: { answer: string }, _ctx) => {
-        // Just return the answer — agent.ts will route it back to the CLI via ctx.reply()
-        return args.answer;
+    execute: async (args: { answer: string }, ctx) => {
+        if (ctx.reply) {
+            try {
+                // Send the answer directly to the user
+                await ctx.reply(createChat(args.answer));
+            } catch (err: any) {
+                console.error("[Orchestrator] Failed to send answerDirectly reply:", err);
+            }
+        }
+        return `Successfully sent the answer to the user: ${args.answer}`;
     },
 };
 
@@ -99,12 +106,28 @@ export const assignTasksTool: ToolSpec = {
                                 parsedPayload = msg.payload;
                             }
 
-                            if (parsedPayload) {
-                                if (parsedPayload.type === "done") {
-                                    return `[Result from ${task.agentId}]:\n${parsedPayload.text}\n`;
+                            // Helper function to recursively search for a matching payload type
+                            const findPayloadType = (obj: any, targetType: string): any => {
+                                if (!obj || typeof obj !== "object") return null;
+                                if (obj.type === targetType) return obj;
+
+                                for (const key in obj) {
+                                    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                                        const result = findPayloadType(obj[key], targetType);
+                                        if (result) return result;
+                                    }
                                 }
-                                if (parsedPayload.type === "blocked") {
-                                    return `[Error from ${task.agentId}]:\nTask blocked: ${parsedPayload.text}\n`;
+                                return null;
+                            };
+
+                            if (parsedPayload) {
+                                const doneMsg = findPayloadType(parsedPayload, "done");
+                                if (doneMsg) {
+                                    return `[Result from ${task.agentId}]:\n${doneMsg.text}\n`;
+                                }
+                                const blockedMsg = findPayloadType(parsedPayload, "blocked");
+                                if (blockedMsg) {
+                                    return `[Error from ${task.agentId}]:\nTask blocked: ${blockedMsg.text}\n`;
                                 }
                             }
                         }
