@@ -3,7 +3,7 @@
  *
  * Three tools for Agent 2:
  *   1. getDailySchedule — Find today's games, team IDs, game IDs.
- *   2. preGameAnalysis  — Aggregated pre-game dossier (team stats, injuries, depth charts).
+ *   2. preGameAnalysis  — Aggregated pre-game dossier (team stats, injuries).
  *   3. liveGameAnalysis — Live box score snapshot (team + player stats).
  *
  * Includes a baked-in team name → ID resolver so the LLM never has to guess IDs.
@@ -218,7 +218,7 @@ export const getDailyScheduleTool: ToolSpec = {
 export const preGameAnalysisTool: ToolSpec = {
     name: "preGameAnalysis",
     description:
-        "Get a comprehensive pre-game dossier for two NBA teams. Fetches team season stats, injuries, and depth charts in ONE call. Pass team names, abbreviations, or IDs.",
+        "Get a comprehensive pre-game dossier for two NBA teams. Fetches team season stats and injuries in ONE call. Pass team names, abbreviations, or IDs.",
     parameters: {
         type: "object",
         properties: {
@@ -246,11 +246,10 @@ export const preGameAnalysisTool: ToolSpec = {
         try {
             const resolvedSeason = args.season || getCurrentSeasonYear();
 
-            // Fire all 3 API calls in parallel
-            const [statsData, injuriesData, depthData] = await Promise.all([
+            // Fire required API calls in parallel
+            const [statsData, injuriesData] = await Promise.all([
                 rscFetch(`team-stats/${resolvedSeason}/NBA`),
                 rscFetch("injuries/NBA"),
-                rscFetch("depth-charts/NBA"),
             ]);
 
             // ── Extract team stats ──
@@ -262,16 +261,6 @@ export const preGameAnalysisTool: ToolSpec = {
             const allInjuries = injuriesData?.data?.NBA ?? [];
             const injA = allInjuries.find((t: any) => t.team_id === idA);
             const injB = allInjuries.find((t: any) => t.team_id === idB);
-
-            // ── Extract depth charts ──
-            const allDepth = depthData?.data?.NBA ?? {};
-            // Depth charts are keyed by team name, not ID, so we need to find the right key
-            let depthA: any = null;
-            let depthB: any = null;
-            for (const [teamName, chart] of Object.entries(allDepth)) {
-                if ((chart as any).team_id === idA) depthA = { team: teamName, chart };
-                if ((chart as any).team_id === idB) depthB = { team: teamName, chart };
-            }
 
             // ── Format the dossier ──
             const sections: string[] = [];
@@ -316,27 +305,6 @@ export const preGameAnalysisTool: ToolSpec = {
             sections.push(`\n## Injury Report`);
             sections.push(`**${injA?.team ?? `Team ${idA}`}**:\n${formatInjuries(injA)}`);
             sections.push(`**${injB?.team ?? `Team ${idB}`}**:\n${formatInjuries(injB)}`);
-
-            // Depth Charts
-            const formatDepth = (d: any) => {
-                if (!d?.chart) return "  No depth chart data.";
-                const positions = ["PG", "SG", "SF", "PF", "C"];
-                return positions
-                    .map((pos) => {
-                        const slot = d.chart[pos];
-                        if (!slot) return `  ${pos}: N/A`;
-                        const players = Object.entries(slot)
-                            .filter(([k]) => k !== "team_id")
-                            .sort(([a], [b]) => Number(a) - Number(b))
-                            .map(([rank, p]: [string, any]) => `${rank}. ${p.player}`)
-                            .join(", ");
-                        return `  ${pos}: ${players}`;
-                    })
-                    .join("\n");
-            };
-            sections.push(`\n## Depth Charts`);
-            sections.push(`**${depthA?.team ?? `Team ${idA}`}**:\n${formatDepth(depthA)}`);
-            sections.push(`**${depthB?.team ?? `Team ${idB}`}**:\n${formatDepth(depthB)}`);
 
             return truncate(sections.join("\n"));
         } catch (err: any) {

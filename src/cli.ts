@@ -12,6 +12,7 @@
  *   /threads          — list threads for your account
  *   /history          — show messages in current thread
  *   /status           — show current thread status / budget
+ *   /wait <ms>        — override request timeout for this session
  *   /whoami           — show your CLI agent identity
  *   /clear            — clear the screen
  *   /help             — show command list
@@ -43,13 +44,16 @@ const C = {
 const NATS_URL = process.env.NATS_URL ?? "nats://agentnet_secret_token@localhost:4222";
 const CLI_AGENT_ID = `cli_user_${randomBytes(4).toString("hex")}`;
 const CLI_NAME = "CLI User";
-const REQUEST_TIMEOUT_MS = 120_000; // 2 min for LLM responses
+const DEFAULT_REQUEST_TIMEOUT_MS = Number(process.env.CLI_REQUEST_TIMEOUT_MS ?? 600_000); // 10 min default
 
 // ── State ──
 let currentTarget = "orchestrator_v1"; // username of the agent to talk to
 let currentThread = `cli_${Date.now().toString(36)}`;
 let client: AgentNetClient;
 let inFlightRequest = false;
+let requestTimeoutMs = Number.isFinite(DEFAULT_REQUEST_TIMEOUT_MS) && DEFAULT_REQUEST_TIMEOUT_MS >= 10_000
+    ? DEFAULT_REQUEST_TIMEOUT_MS
+    : 600_000;
 
 // ── Helpers ──
 function banner() {
@@ -71,6 +75,7 @@ ${C.yellow}${C.bold}Commands:${C.reset}
   ${C.green}/threads${C.reset}          List your threads
   ${C.green}/history${C.reset}          Show messages in current thread
   ${C.green}/status${C.reset}           Current thread budget/status
+  ${C.green}/wait <ms>${C.reset}        Set request timeout for this session
   ${C.green}/whoami${C.reset}           Show your CLI identity
   ${C.green}/clear${C.reset}            Clear the screen
   ${C.green}/help${C.reset}             Show this help
@@ -197,6 +202,17 @@ async function cmdStatus() {
     }
 }
 
+function cmdWait(arg: string) {
+    const ms = Number(arg);
+    if (!Number.isFinite(ms) || ms < 10_000) {
+        console.log(`  ${C.yellow}Usage: /wait <milliseconds> (minimum 10000)${C.reset}`);
+        console.log(`  ${C.dim}Current timeout: ${requestTimeoutMs}ms${C.reset}`);
+        return;
+    }
+    requestTimeoutMs = Math.floor(ms);
+    console.log(`  ${C.green}Request timeout set to ${requestTimeoutMs}ms${C.reset}`);
+}
+
 function cmdWhoami() {
     console.log(`
   ${C.cyan}Agent ID:${C.reset}  ${CLI_AGENT_ID}
@@ -204,6 +220,7 @@ function cmdWhoami() {
   ${C.cyan}Account:${C.reset}   ${client.getAccountId() ?? "not registered"}
   ${C.cyan}Target:${C.reset}    @${currentTarget}
   ${C.cyan}Thread:${C.reset}    ${currentThread}
+  ${C.cyan}Timeout:${C.reset}   ${requestTimeoutMs}ms
   ${C.cyan}NATS:${C.reset}      ${NATS_URL.replace(/\/\/.*@/, "//***@")}
 `);
 }
@@ -212,13 +229,13 @@ function cmdWhoami() {
 
 async function sendChat(text: string) {
     const payload = { type: "chat", text };
-    process.stdout.write(`  ${C.dim}⏳ Waiting for @${currentTarget}...${C.reset}`);
+    process.stdout.write(`  ${C.dim}⏳ Waiting for @${currentTarget} (timeout ${requestTimeoutMs}ms)...${C.reset}`);
 
     try {
         const reply: AgentMessage = await client.request(
             `@${currentTarget}`,
             payload,
-            { threadId: currentThread, timeoutMs: REQUEST_TIMEOUT_MS }
+            { threadId: currentThread, timeoutMs: requestTimeoutMs }
         );
 
         // Clear the waiting line
@@ -229,7 +246,13 @@ async function sendChat(text: string) {
         console.log();
     } catch (e: any) {
         process.stdout.write("\r\x1b[K");
-        console.log(`  ${C.red}Error: ${e.message}${C.reset}`);
+        const message = String(e?.message ?? e ?? "Unknown error");
+        if (message.toUpperCase().includes("TIMEOUT")) {
+            console.log(`  ${C.red}Error: TIMEOUT${C.reset}`);
+            console.log(`  ${C.yellow}Tip:${C.reset} backend may still finish. Run ${C.green}/history${C.reset} in this thread to fetch late results.`);
+        } else {
+            console.log(`  ${C.red}Error: ${message}${C.reset}`);
+        }
         console.log();
     }
 }
@@ -309,6 +332,9 @@ async function main() {
                         break;
                     case "/status":
                         await cmdStatus();
+                        break;
+                    case "/wait":
+                        cmdWait(arg);
                         break;
                     case "/whoami":
                         cmdWhoami();
