@@ -3,7 +3,7 @@
  */
 
 import type { ToolSpec } from "./registry.js";
-import { createChat } from "../protocol.js";
+import { createChat, isProtocolMessage } from "../protocol.js";
 import { NetworkBridge } from "../networkBridge.js";
 import { secrets } from "../config.js";
 
@@ -14,7 +14,7 @@ import { secrets } from "../config.js";
  */
 export const chatWithAgentTool: ToolSpec = {
     name: "chatWithAgent",
-    description: "Send a message or question to another specific agent on the network. Use this to consult peers or ask questions without assigning them a formal task.",
+    description: "Send a message or question to another specific agent on the network. By default, the Orchestrator waits for the peer's direct reply so it can answer the user in the same turn.",
     parameters: {
         type: "object",
         properties: {
@@ -26,12 +26,28 @@ export const chatWithAgentTool: ToolSpec = {
                 type: "string",
                 description: "The message or question to send.",
             },
+            waitForReply: {
+                type: "boolean",
+                description: "If true, wait for a direct reply from the target agent and return it immediately.",
+            },
+            timeoutMs: {
+                type: "number",
+                description: "Optional timeout when waitForReply=true.",
+            },
         },
         required: ["targetAgentId", "message"],
     },
-    execute: async (args: { targetAgentId: string; message: string }, ctx) => {
+    execute: async (args: { targetAgentId: string; message: string; waitForReply?: boolean; timeoutMs?: number }, ctx) => {
         if (!ctx.bridge || !ctx.threadId || !ctx.agentId) {
             throw new Error("Missing network context to chat with agent.");
+        }
+
+        if (
+            ctx.agentId !== secrets.orchestratorId
+            && args.targetAgentId === secrets.orchestratorId
+            && ctx.hasReplyChannel === true
+        ) {
+            return "Error: Direct reply channel is available in this turn. Do not call chatWithAgent back to Orchestrator; respond directly (or use markTaskDone/reportError for assigned work).";
         }
 
         if (args.targetAgentId === ctx.agentId) {
@@ -47,9 +63,40 @@ export const chatWithAgentTool: ToolSpec = {
 
         // Use the standard internal CHAT protocol type, stamping who it's from
         const payload = createChat(args.message, ctx.agentId);
-        await ctx.bridge.sendMessage(args.targetAgentId, peerThreadId, payload);
+        const waitForReply = args.waitForReply ?? (ctx.agentId === secrets.orchestratorId);
 
-        return `Message successfully sent to ${args.targetAgentId} on thread ${peerThreadId}. They will reply when ready.`;
+        if (!waitForReply) {
+            await ctx.bridge.sendMessage(args.targetAgentId, peerThreadId, payload);
+            return `Message successfully sent to ${args.targetAgentId} on thread ${peerThreadId}. They will reply when ready.`;
+        }
+
+        const timeoutMs = typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs)
+            ? Math.max(1000, Math.floor(args.timeoutMs))
+            : 75_000;
+
+        let reply;
+        try {
+            reply = await ctx.bridge.requestMessage(
+                args.targetAgentId,
+                peerThreadId,
+                payload,
+                { timeoutMs }
+            );
+        } catch (err: any) {
+            const message = String(err?.message ?? err ?? "unknown error");
+            if (message.toUpperCase().includes("TIMEOUT")) {
+                return `No reply from ${args.targetAgentId} within ${timeoutMs}ms on thread ${peerThreadId}.`;
+            }
+            throw err;
+        }
+
+        const responseText = isProtocolMessage(reply.payload)
+            ? `[${reply.payload.type.toUpperCase()}] ${reply.payload.text}`
+            : typeof reply.payload === "string"
+                ? reply.payload
+                : JSON.stringify(reply.payload);
+
+        return `Reply from ${args.targetAgentId} on thread ${peerThreadId}:\n${responseText}`;
     },
 };
 

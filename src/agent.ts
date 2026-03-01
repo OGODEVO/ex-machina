@@ -112,6 +112,37 @@ export class Agent {
         console.log(`[${this.name}] Received message from ${message.from_agent}`);
 
         try {
+            const incomingProtocol = isProtocolMessage(message.payload) ? message.payload : null;
+            const hasReplyChannel = Boolean(message.reply_to);
+
+            // Orchestrator receives async DONE/BLOCKED worker events with no reply subject.
+            // These are consumed by assignTasks polling and should not trigger a new user reply loop.
+            if (
+                this.id === secrets.orchestratorId
+                && !hasReplyChannel
+                && incomingProtocol
+                && (incomingProtocol.type === "done" || incomingProtocol.type === "blocked")
+            ) {
+                console.log(`[${this.name}] Async ${incomingProtocol.type.toUpperCase()} from ${message.from_agent}; no reply channel, skipping.`);
+                return;
+            }
+
+            let repliedToCaller = false;
+            const replySafely = async (payload: unknown, options?: SendOptions): Promise<string> => {
+                repliedToCaller = true;
+                return ctx.reply(payload, options);
+            };
+
+            const incomingProtocolType = incomingProtocol?.type ?? null;
+            const isExternalUserMessage = ![secrets.orchestratorId, "agent1", "agent2", "agent3"].includes(message.from_agent);
+            const isAssignmentOrDebateThread = Boolean(
+                message.thread_id
+                && (
+                    incomingProtocolType === "assign"
+                    || message.thread_id.startsWith("debate_")
+                )
+            );
+
             // Include fromAgent if present so the LLM knows who is talking to them
             let textBlock = typeof message.payload === "string"
                 ? message.payload
@@ -163,10 +194,15 @@ export class Agent {
             let finalResponse: string | null = null;
             const toolsApi = this.toolRegistry.hasTools() ? this.toolRegistry.getOpenAITools() : undefined;
             const MAX_TOOL_ROUNDS = 20;
+            const HARD_STOP_ROUNDS = 30;
             let round = 0;
+            let delegatedResultReceived = false;
 
             while (finalResponse === null) {
                 round++;
+                if (round > HARD_STOP_ROUNDS) {
+                    throw new Error("Strict assignment mode: agent did not call markTaskDone/reportError within the hard tool-round limit.");
+                }
                 if (round > MAX_TOOL_ROUNDS) {
                     messages.push({
                         role: "system",
@@ -181,6 +217,20 @@ export class Agent {
                 // 1. Did the LLM return a Tool Call request object?
                 if (responseText.includes('{"_isToolCall":true')) {
                     const tc = JSON.parse(responseText);
+                    if (
+                        this.id === secrets.orchestratorId
+                        && isExternalUserMessage
+                        && delegatedResultReceived
+                        && (tc.name === "searchWeb" || tc.name === "deepSearch")
+                    ) {
+                        console.log(`[${this.name}] Blocked ${tc.name} after delegated result; forcing finalization to user.`);
+                        messages.push({
+                            role: "system",
+                            content: "SYSTEM: You already received delegated results from worker agents for this user turn. Do NOT run searchWeb/deepSearch now. You MUST finalize to the user immediately via answerDirectly.",
+                        });
+                        continue;
+                    }
+
                     console.log(`[${this.name}] Executing Tool: ${tc.name}`);
 
                     // Execute the local TS function
@@ -188,10 +238,14 @@ export class Agent {
                         agentId: this.id,
                         bridge: this.network,
                         threadId: message.thread_id,
-                        reply: ctx.reply,
+                        hasReplyChannel,
+                        reply: replySafely,
                     });
 
                     console.log(`[${this.name}] Tool ${tc.name} returned: ${toolResult}`);
+                    if ((tc.name === "assignTasks" || tc.name === "chatWithAgent") && !toolResult.startsWith("Error:")) {
+                        delegatedResultReceived = true;
+                    }
 
                     if (tc.name === "markTaskDone" && toolResult.includes("Successfully sent [PROTOCOL: DONE]")) {
                         // The agent successfully completed the task via tool selection.
@@ -201,6 +255,14 @@ export class Agent {
                     }
 
                     if (tc.name === "endConversation" && toolResult.includes("Successfully ended the conversation")) {
+                        if (isExternalUserMessage && !repliedToCaller) {
+                            console.log(`[${this.name}] Prevented silent endConversation on user thread without a reply.`);
+                            messages.push({
+                                role: "system",
+                                content: "SYSTEM: You cannot end this user conversation yet because no reply has been sent. You MUST either answer directly or call answerDirectly first.",
+                            });
+                            continue;
+                        }
                         console.log(`[${this.name}] explicitly ended the conversation.`);
                         return;
                     }
@@ -210,32 +272,28 @@ export class Agent {
                     messages.push({ role: "user", content: `Tool Result: ${toolResult}\nEvaluate this result. If you need more information, call another tool. If you have finished your task, call the appropriate tool to complete it (e.g., markTaskDone). If you are chatting, you may respond directly.` });
                 } else {
                     // 2. The LLM returned raw text
+                    if (isAssignmentOrDebateThread) {
+                        messages.push({
+                            role: "assistant",
+                            content: responseText,
+                        });
+                        messages.push({
+                            role: "user",
+                            content: "STRICT MODE: On assignment/debate threads, raw text is not a valid completion. You MUST call markTaskDone with resultSummary, or reportError with reason/errorLog. Do not call endConversation.",
+                        });
+                        continue;
+                    }
                     finalResponse = responseText;
                 }
             }
 
             console.log(`[${this.name}] Processing final response.`);
 
-            // CODE ENFORCEMENT: If this is a peer thread and we are talking to the Orchestrator,
-            // intercept the raw text and force it into a markTaskDone payload.
-            if (message.thread_id && (
-                (message.thread_id.includes("orchestrator") && message.thread_id.includes("agent")) ||
-                message.thread_id.startsWith("debate_")
-            )) {
-                console.log(`[${this.name}] Intercepted raw text on assignment thread. Auto-converting to DONE payload.`);
-                await this.toolRegistry.executeTool("markTaskDone", JSON.stringify({ resultSummary: finalResponse || "(Empty response)" }), {
-                    agentId: this.id,
-                    bridge: this.network,
-                    threadId: message.thread_id,
-                });
-                return; // Exit successfully
-            }
-
             // Otherwise, route as normal chat
             // Always reply using the standard protocol envelope
             // Use safe reply — fire-and-forget messages have no reply subject
             try {
-                await ctx.reply(createChat(finalResponse || "(Empty response)"));
+                await replySafely(createChat(finalResponse || "(Empty response)"));
             } catch (replyErr: any) {
                 if (replyErr?.code === "missing_reply_to") {
                     // Fire-and-forget message — no one to reply to, just log and move on

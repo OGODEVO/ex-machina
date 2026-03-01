@@ -6,6 +6,16 @@ import { parse as parseYaml } from "yaml";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+function withDefaultNatsUrl(value: string | undefined): string {
+    if (value && value.trim()) return value.trim();
+    // Keep default aligned with AgentNet docs and local docker stack auth.
+    return "nats://agentnet_secret_token@localhost:4222";
+}
+
+export function redactNatsUrl(url: string): string {
+    return url.replace(/\/\/.*@/, "//***@");
+}
+
 // ── Secrets from .env ──
 export const secrets = {
     openaiApiKey: process.env.OPENAI_API_KEY ?? "",
@@ -13,7 +23,7 @@ export const secrets = {
     novitaApiKey: process.env.NOVITA_API_KEY ?? "",
     perplexityApiKey: process.env.PERPLEXITY_API_KEY ?? "",
     rscToken: process.env.RSC_TOKEN ?? "",
-    natsUrl: process.env.NATS_URL ?? "nats://localhost:4222",
+    natsUrl: withDefaultNatsUrl(process.env.NATS_URL),
     orchestratorId: process.env.ORCHESTRATOR_ID ?? "orchestrator_v1",
     orchestratorName: process.env.ORCHESTRATOR_NAME ?? "Orchestrator",
 } as const;

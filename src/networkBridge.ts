@@ -67,7 +67,14 @@ export class NetworkBridge {
 
     /** Graceful shutdown. */
     async stopNetwork(): Promise<void> {
-        await this.sdk.close();
+        try {
+            await this.sdk.close();
+        } catch (err: any) {
+            if (err?.code === "CONNECTION_DRAINING") {
+                return;
+            }
+            throw err;
+        }
     }
 
     /** Fire-and-forget with explicit threadId. */

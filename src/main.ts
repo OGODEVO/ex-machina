@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Agent } from "./agent.js";
-import { secrets, getAgentShellMode } from "./config.js";
+import { secrets, getAgentShellMode, redactNatsUrl } from "./config.js";
 import { assignTasksTool, answerDirectlyTool, facilitateDebateTool } from "./tools/orchestratorTools.js";
 import { markTaskDoneTool, askQuestionTool, reportErrorTool } from "./tools/workerTools.js";
 import { chatWithAgentTool, discoverAgentsTool, endConversationTool } from "./tools/sharedTools.js";
@@ -37,6 +37,7 @@ function buildWorkerTools(agentId: string): ToolSpec[] {
 
 async function main() {
     console.log("Starting Agent OS...");
+    console.log(`[config] NATS_URL: ${redactNatsUrl(secrets.natsUrl)}`);
 
     const agentProfiles = `
 # AVAILABLE AGENTS
@@ -90,10 +91,12 @@ async function main() {
 
     console.log("\n✅ All 4 agents are online and connected to AgentNet.");
 
-    // Handle graceful shutdown
-    process.on("SIGINT", async () => {
+    let shuttingDown = false;
+    const shutdown = async () => {
+        if (shuttingDown) return;
+        shuttingDown = true;
         console.log("\nShutting down Agent OS...");
-        await Promise.all([
+        await Promise.allSettled([
             orchestrator.stop(),
             agent1.stop(),
             agent2.stop(),
@@ -101,10 +104,19 @@ async function main() {
             closeBrowser(),
         ]);
         process.exit(0);
-    });
+    };
+
+    // Handle graceful shutdown
+    process.once("SIGINT", () => { void shutdown(); });
+    process.once("SIGTERM", () => { void shutdown(); });
 }
 
 main().catch((err) => {
+    if (err?.code === "AUTHORIZATION_VIOLATION") {
+        console.error("NATS authentication failed.");
+        console.error("Check NATS_URL token and ensure your AgentNet stack is running with the same auth token.");
+        console.error(`Current NATS_URL: ${redactNatsUrl(secrets.natsUrl)}`);
+    }
     console.error("Fatal startup error:", err);
     process.exit(1);
 });

@@ -1,5 +1,5 @@
 import type { ToolSpec } from "./registry.js";
-import { createAssign, createChat } from "../protocol.js";
+import { createAssign, createChat, isProtocolMessage } from "../protocol.js";
 import { NetworkBridge } from "../networkBridge.js";
 
 /**
@@ -24,11 +24,16 @@ export const answerDirectlyTool: ToolSpec = {
             try {
                 // Send the answer directly to the user
                 await ctx.reply(createChat(args.answer));
+                return `Successfully sent the answer to the user: ${args.answer}`;
             } catch (err: any) {
                 console.error("[Orchestrator] Failed to send answerDirectly reply:", err);
+                if (err?.code === "missing_reply_to") {
+                    return "Could not send answer: no reply channel for this message (fire-and-forget internal event).";
+                }
+                return `Could not send answer: ${err?.message ?? String(err)}`;
             }
         }
-        return `Successfully sent the answer to the user: ${args.answer}`;
+        return "Could not send answer: missing reply function in tool context.";
     },
 };
 
@@ -78,63 +83,27 @@ export const assignTasksTool: ToolSpec = {
 
             const payload = createAssign(task.agentId, task.instructions);
             try {
-                // Send the assignment (fire-and-forget)
-                await ctx.bridge!.sendMessage(task.agentId, peerThreadId, payload);
-                console.log(`[Orchestrator] Sent task to ${task.agentId} on ${peerThreadId}, waiting for DONE...`);
+                console.log(`[Orchestrator] Sent task to ${task.agentId} on ${peerThreadId}, waiting for terminal reply...`);
+                const reply = await ctx.bridge!.requestMessage(task.agentId, peerThreadId, payload, {
+                    timeoutMs: 300_000,
+                });
 
-                // Poll the thread history waiting for a DONE or BLOCKED message from the agent
-                const timeoutMs = 300_000; // 5 minutes max
-                const pollIntervalMs = 5000;
-                const startTime = Date.now();
-
-                while (Date.now() - startTime < timeoutMs) {
-                    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-
-                    const history = await ctx.bridge!.loadThreadWindow(peerThreadId);
-                    if (history && Array.isArray(history.messages)) {
-                        // Look for the most recent DONE or BLOCKED message from the assigned agent
-                        for (let i = history.messages.length - 1; i >= 0; i--) {
-                            const msg = history.messages[i];
-                            const sender = msg.from_username || msg.from_agent || msg.sender_id || "";
-
-                            // Debug logging to see what messages are flying by
-
-                            let parsedPayload: any = null;
-                            if (typeof msg.payload === "string") {
-                                try { parsedPayload = JSON.parse(msg.payload); } catch (e) { }
-                            } else if (typeof msg.payload === "object") {
-                                parsedPayload = msg.payload;
-                            }
-
-                            // Helper function to recursively search for a matching payload type
-                            const findPayloadType = (obj: any, targetType: string): any => {
-                                if (!obj || typeof obj !== "object") return null;
-                                if (obj.type === targetType) return obj;
-
-                                for (const key in obj) {
-                                    if (Object.prototype.hasOwnProperty.call(obj, key)) {
-                                        const result = findPayloadType(obj[key], targetType);
-                                        if (result) return result;
-                                    }
-                                }
-                                return null;
-                            };
-
-                            if (parsedPayload) {
-                                const doneMsg = findPayloadType(parsedPayload, "done");
-                                if (doneMsg) {
-                                    return `[Result from ${task.agentId}]:\n${doneMsg.text}\n`;
-                                }
-                                const blockedMsg = findPayloadType(parsedPayload, "blocked");
-                                if (blockedMsg) {
-                                    return `[Error from ${task.agentId}]:\nTask blocked: ${blockedMsg.text}\n`;
-                                }
-                            }
-                        }
-                    }
+                const protocol = parseProtocolPayload(reply.payload);
+                if (!protocol) {
+                    return `[Error from ${task.agentId}]:\nTask failed: invalid reply payload (expected done/blocked).\n`;
                 }
 
-                return `[Error from ${task.agentId}]:\nTask failed: TIMEOUT after 5 minutes.\n`;
+                if (protocol.type === "done") {
+                    return `[Result from ${task.agentId}]:\n${protocol.text}\n`;
+                }
+                if (protocol.type === "blocked") {
+                    return `[Error from ${task.agentId}]:\nTask blocked: ${protocol.text}\n`;
+                }
+                if (protocol.type === "chat") {
+                    return `[Result from ${task.agentId}]:\n${protocol.text}\n`;
+                }
+
+                return `[Error from ${task.agentId}]:\nTask failed: unsupported terminal payload type "${protocol.type}".\n`;
             } catch (err: any) {
                 return `[Error from ${task.agentId}]:\nTask failed: ${err.message}\n`;
             }
@@ -189,6 +158,7 @@ export const facilitateDebateTool: ToolSpec = {
 
         const rounds = Math.max(1, Math.min(5, args.rounds));
         const debateThreadId = `debate_${Date.now()}`;
+        const roleByAgent = buildDebateRoles(agents);
 
         let transcript = `DEBATE TOPIC: ${args.topic}\nPARTICIPANTS: ${agents.join(", ")}\nROUNDS: ${rounds}\n\n`;
         let conversationHistory = `You are participating in a formal debate with ${agents.length} participants. The topic is: ${args.topic}\n\n`;
@@ -196,6 +166,18 @@ export const facilitateDebateTool: ToolSpec = {
         console.log(`[Orchestrator] Starting ${agents.length}-agent debate on thread ${debateThreadId}`);
 
         let aborted = false;
+        let lastAcceptedTurnText = "";
+
+        const requestTurn = async (speaker: string, prompt: string): Promise<string> => {
+            const reply = await ctx.bridge!.requestMessage(speaker, debateThreadId, createAssign(speaker, prompt), {
+                timeoutMs: 180_000,
+            });
+            const protocol = parseProtocolPayload(reply.payload);
+            if (!protocol) throw new Error("invalid reply payload (expected done/blocked/chat)");
+            if (protocol.type === "blocked") throw new Error(`Agent blocked: ${protocol.text}`);
+            if (protocol.type === "done" || protocol.type === "chat") return protocol.text || "(Empty argument)";
+            throw new Error(`unsupported payload type "${protocol.type}"`);
+        };
 
         for (let r = 1; r <= rounds && !aborted; r++) {
             transcript += `--- ROUND ${r} ---\n`;
@@ -209,79 +191,39 @@ export const facilitateDebateTool: ToolSpec = {
 
                 let prompt: string;
                 if (isFirst) {
-                    prompt = `${conversationHistory}You are ${speaker}. Please provide your opening argument.`;
+                    prompt = `${conversationHistory}You are ${speaker}. ${roleByAgent[speaker]}\n\nYou are opening the debate. Provide your first argument.`;
                 } else if (isLast) {
-                    prompt = `${conversationHistory}You are ${speaker}. Please provide your final rebuttal and closing statement.`;
+                    prompt = `${conversationHistory}You are ${speaker}. ${roleByAgent[speaker]}\n\nProvide your final rebuttal and closing statement.`;
                 } else {
-                    prompt = `${conversationHistory}You are ${speaker}. Please respond to ${prevSpeaker}'s last point with your rebuttal.`;
+                    prompt = `${conversationHistory}You are ${speaker}. ${roleByAgent[speaker]}\n\nRespond to ${prevSpeaker}'s last point with your rebuttal.`;
                 }
+                prompt += `\n\nHard constraints:
+- Think independently from other agents.
+- Introduce at least one NEW evidence point not already in the transcript.
+- Include one sentence starting with "Counterpoint:" that directly challenges a specific claim from ${prevSpeaker}.
+- Do NOT copy or lightly paraphrase another agent's wording.
+- Keep this turn concise (about 120-220 words).
+- End with one line starting with "Position:" summarizing your stance.
+- Complete the turn by calling markTaskDone with your turn text.`;
 
                 try {
-                    // Send the debate prompt (fire-and-forget)
-                    await ctx.bridge.sendMessage(speaker, debateThreadId, createAssign(speaker, prompt));
-                    console.log(`[Orchestrator] Sent debate turn to ${speaker}, waiting for DONE...`);
+                    console.log(`[Orchestrator] Sent debate turn to ${speaker}, waiting for terminal reply...`);
+                    let turnText = await requestTurn(speaker, prompt);
 
-                    // Poll thread history waiting for the agent to finish their turn
-                    const timeoutMs = 180_000; // 3 minutes per turn
-                    const pollIntervalMs = 5000;
-                    const startTime = Date.now();
-                    let turnText = null;
-
-                    while (Date.now() - startTime < timeoutMs) {
-                        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-
-                        const history = await ctx.bridge.loadThreadWindow(debateThreadId);
-                        if (history && Array.isArray(history.messages)) {
-                            for (let j = history.messages.length - 1; j >= 0; j--) {
-                                const msg = history.messages[j];
-                                const msgSender = msg.from_username || msg.from_agent || msg.sender_id || "";
-
-                                // Debate threads are still isolated peer-to-peer per speaker request
-
-                                let parsedPayload: any = null;
-                                if (typeof msg.payload === "string") {
-                                    try { parsedPayload = JSON.parse(msg.payload); } catch (e) { }
-                                } else if (typeof msg.payload === "object") {
-                                    parsedPayload = msg.payload;
-                                }
-
-                                // Helper function to recursively search for a matching payload type
-                                const findPayloadType = (obj: any, targetType: string): any => {
-                                    if (!obj || typeof obj !== "object") return null;
-                                    if (obj.type === targetType) return obj;
-
-                                    for (const key in obj) {
-                                        if (Object.prototype.hasOwnProperty.call(obj, key)) {
-                                            const result = findPayloadType(obj[key], targetType);
-                                            if (result) return result;
-                                        }
-                                    }
-                                    return null;
-                                };
-
-                                if (parsedPayload) {
-                                    const doneMsg = findPayloadType(parsedPayload, "done");
-                                    if (doneMsg) {
-                                        turnText = doneMsg.text || "(Empty argument)";
-                                        break;
-                                    }
-                                    const blockedMsg = findPayloadType(parsedPayload, "blocked");
-                                    if (blockedMsg) {
-                                        turnText = `(Agent blocked: ${blockedMsg.text})`;
-                                        break;
-                                    }
-                                }
-                            }
+                    if (isLikelyMirror(turnText, lastAcceptedTurnText)) {
+                        console.log(`[Orchestrator] ${speaker} produced mirrored content; requesting one independent rewrite.`);
+                        const rewritePrompt = `${conversationHistory}Your previous turn was rejected because it mirrored another agent's language.\n\nYou are ${speaker}. ${roleByAgent[speaker]}\n\nRewrite your turn with independent reasoning and fresh evidence. You must disagree with one concrete claim from ${prevSpeaker} in a sentence starting with "Counterpoint:". Do not reuse sentence structure from previous turns. End with "Position: ...". Then call markTaskDone.`;
+                        const retryText = await requestTurn(speaker, rewritePrompt);
+                        if (!isLikelyMirror(retryText, lastAcceptedTurnText)) {
+                            turnText = retryText;
+                        } else {
+                            turnText = `[Mirror warning: second attempt remained too similar]\n${retryText}`;
                         }
-                        if (turnText !== null) break;
-                    }
-
-                    if (turnText === null) {
-                        throw new Error("TIMEOUT waiting for debate turn");
                     }
 
                     transcript += `**${speaker.toUpperCase()}**:\n${turnText}\n\n`;
                     conversationHistory += `\n[${speaker}]: ${turnText}\n\n`;
+                    lastAcceptedTurnText = turnText;
                 } catch (err: any) {
                     transcript += `**${speaker.toUpperCase()}** failed to respond: ${err.message}\n`;
                     aborted = true;
@@ -293,12 +235,75 @@ export const facilitateDebateTool: ToolSpec = {
     },
 };
 
-// Small helper to pull text out of an unknown payload wrapper
-function extractText(payload: unknown): string | null {
-    if (typeof payload === "string") return payload;
-    if (typeof payload === "object" && payload !== null && "text" in payload) {
-        return String((payload as any).text);
+function parseProtocolPayload(value: unknown): any {
+    if (isProtocolMessage(value)) return value;
+    if (typeof value === "string") {
+        try {
+            return parseProtocolPayload(JSON.parse(value));
+        } catch {
+            return null;
+        }
+    }
+    if (!value || typeof value !== "object") return null;
+    for (const nested of Object.values(value as Record<string, unknown>)) {
+        const found = parseProtocolPayload(nested);
+        if (found) return found;
     }
     return null;
 }
 
+function buildDebateRoles(agents: string[]): Record<string, string> {
+    if (agents.length === 2) {
+        return {
+            [agents[0]]: "Role: Affirmative. Defend the strongest case FOR the proposition.",
+            [agents[1]]: "Role: Negative. Build the strongest case AGAINST the proposition.",
+        };
+    }
+    if (agents.length === 3) {
+        return {
+            [agents[0]]: "Role: Thesis builder. Present the primary thesis and strongest supportive evidence.",
+            [agents[1]]: "Role: Contrarian. Attack assumptions, contradictions, and overconfidence.",
+            [agents[2]]: "Role: Risk analyst. Focus on uncertainty, downside scenarios, and failure modes.",
+        };
+    }
+    return {
+        [agents[0]]: "Role: Thesis builder. Present the primary thesis and strongest supportive evidence.",
+        [agents[1]]: "Role: Contrarian. Attack assumptions, contradictions, and overconfidence.",
+        [agents[2]]: "Role: Risk analyst. Focus on uncertainty, downside scenarios, and failure modes.",
+        [agents[3]]: "Role: Synthesizer. Test both sides, quantify tradeoffs, and present the decision rule.",
+    };
+}
+
+function isLikelyMirror(current: string, previous: string): boolean {
+    const a = normalizeText(current);
+    const b = normalizeText(previous);
+    if (!a || !b) return false;
+    if (a === b) return true;
+    if (a.length > 120 && b.length > 120 && (a.includes(b) || b.includes(a))) return true;
+
+    const similarity = jaccardSimilarity(a, b);
+    const lenRatio = a.length > b.length ? a.length / b.length : b.length / a.length;
+    return similarity >= 0.82 && lenRatio <= 1.35;
+}
+
+function normalizeText(input: string): string {
+    return input
+        .toLowerCase()
+        .replace(/https?:\/\/\S+/g, " ")
+        .replace(/[^a-z0-9\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function jaccardSimilarity(a: string, b: string): number {
+    const setA = new Set(a.split(" ").filter(Boolean));
+    const setB = new Set(b.split(" ").filter(Boolean));
+    if (setA.size === 0 || setB.size === 0) return 0;
+
+    let intersection = 0;
+    for (const token of setA) {
+        if (setB.has(token)) intersection++;
+    }
+    const union = setA.size + setB.size - intersection;
+    return union === 0 ? 0 : intersection / union;
+}

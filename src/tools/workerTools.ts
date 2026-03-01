@@ -34,6 +34,15 @@ export const markTaskDoneTool: ToolSpec = {
         }
 
         const payload = createDone(args.resultSummary);
+        if (ctx.reply) {
+            try {
+                await ctx.reply(payload);
+                return `Successfully sent [PROTOCOL: DONE] to Orchestrator via direct reply channel.`;
+            } catch (err: any) {
+                if (err?.code !== "missing_reply_to") throw err;
+                // Fall through to fire-and-forget path.
+            }
+        }
         await ctx.bridge.sendMessage(secrets.orchestratorId, ctx.threadId, payload);
 
         return `Successfully sent [PROTOCOL: DONE] to Orchestrator. Wait for further instructions.`;
@@ -96,6 +105,15 @@ export const reportErrorTool: ToolSpec = {
         }
 
         const payload = createBlocked(args.reason, args.errorLog);
+        if (ctx.reply) {
+            try {
+                await ctx.reply(payload);
+                return `Error reported to Orchestrator via direct reply channel. Wait for further instructions.`;
+            } catch (err: any) {
+                if (err?.code !== "missing_reply_to") throw err;
+                // Fall through to fire-and-forget path.
+            }
+        }
         await ctx.bridge.sendMessage(secrets.orchestratorId, ctx.threadId, payload);
 
         return `Error reported to Orchestrator. Wait for further instructions.`;

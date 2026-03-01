@@ -40,7 +40,7 @@ const C = {
     bgBlue: "\x1b[44m",
 };
 
-const NATS_URL = process.env.NATS_URL ?? "nats://localhost:4222";
+const NATS_URL = process.env.NATS_URL ?? "nats://agentnet_secret_token@localhost:4222";
 const CLI_AGENT_ID = `cli_user_${randomBytes(4).toString("hex")}`;
 const CLI_NAME = "CLI User";
 const REQUEST_TIMEOUT_MS = 120_000; // 2 min for LLM responses
@@ -49,6 +49,7 @@ const REQUEST_TIMEOUT_MS = 120_000; // 2 min for LLM responses
 let currentTarget = "orchestrator_v1"; // username of the agent to talk to
 let currentThread = `cli_${Date.now().toString(36)}`;
 let client: AgentNetClient;
+let inFlightRequest = false;
 
 // ── Helpers ──
 function banner() {
@@ -275,52 +276,65 @@ async function main() {
             return;
         }
 
-        // Slash commands
-        if (input.startsWith("/")) {
-            const [cmd, ...rest] = input.split(/\s+/);
-            const arg = rest.join(" ");
+        if (inFlightRequest) {
+            console.log(`  ${C.yellow}Still waiting for the previous request. Please wait.${C.reset}`);
+            rl.setPrompt(promptText());
+            rl.prompt();
+            return;
+        }
 
-            switch (cmd.toLowerCase()) {
-                case "/agents":
-                    await cmdAgents();
-                    break;
-                case "/talk":
-                    await cmdTalk(arg);
-                    break;
-                case "/thread":
-                    await cmdThread(arg);
-                    break;
-                case "/threads":
-                    await cmdThreads();
-                    break;
-                case "/history":
-                    await cmdHistory();
-                    break;
-                case "/status":
-                    await cmdStatus();
-                    break;
-                case "/whoami":
-                    cmdWhoami();
-                    break;
-                case "/clear":
-                    console.clear();
-                    banner();
-                    break;
-                case "/help":
-                    printHelp();
-                    break;
-                case "/quit":
-                case "/exit":
-                    console.log(`\n  ${C.yellow}Disconnecting...${C.reset}`);
-                    await client.close();
-                    console.log(`  ${C.green}Goodbye! 👋${C.reset}\n`);
-                    process.exit(0);
-                default:
-                    console.log(`  ${C.yellow}Unknown command: ${cmd}. Type /help${C.reset}`);
+        inFlightRequest = true;
+
+        // Slash commands
+        try {
+            if (input.startsWith("/")) {
+                const [cmd, ...rest] = input.split(/\s+/);
+                const arg = rest.join(" ");
+
+                switch (cmd.toLowerCase()) {
+                    case "/agents":
+                        await cmdAgents();
+                        break;
+                    case "/talk":
+                        await cmdTalk(arg);
+                        break;
+                    case "/thread":
+                        await cmdThread(arg);
+                        break;
+                    case "/threads":
+                        await cmdThreads();
+                        break;
+                    case "/history":
+                        await cmdHistory();
+                        break;
+                    case "/status":
+                        await cmdStatus();
+                        break;
+                    case "/whoami":
+                        cmdWhoami();
+                        break;
+                    case "/clear":
+                        console.clear();
+                        banner();
+                        break;
+                    case "/help":
+                        printHelp();
+                        break;
+                    case "/quit":
+                    case "/exit":
+                        console.log(`\n  ${C.yellow}Disconnecting...${C.reset}`);
+                        await client.close();
+                        console.log(`  ${C.green}Goodbye! 👋${C.reset}\n`);
+                        process.exit(0);
+                    default:
+                        console.log(`  ${C.yellow}Unknown command: ${cmd}. Type /help${C.reset}`);
+                }
+            } else {
+                // Regular message → send to agent
+                await sendChat(input);
             }
-        } else {
-            // Regular message → send to agent
-            await sendChat(input);
+        } finally {
+            inFlightRequest = false;
         }
 
         rl.setPrompt(promptText());
