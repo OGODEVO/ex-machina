@@ -20,4 +20,4 @@ agent2:
 agent3:
   model: minimax/minimax-m2.5
   base_url: https://api.novita.ai/openai
-  max_tokens: 131100
+  max_tokens: 131072
