@@ -111,3 +111,15 @@ Modern web apps (React/Vue/etc.) load data asynchronously after clicks. If you d
 - **Peer thread IDs** are deterministic: `${mainThread}::${sorted(a,b)}::r${round}`. Don't change this convention.
 - **Time injection** happens in `agent.ts` — every LLM call gets the current UTC time appended to the system prompt. Don't duplicate this elsewhere.
 - **The shared browser instance** in `browserTools.ts` is lazy-launched and reused. `closeBrowser()` is called on SIGINT in `main.ts`.
+
+## Latest Progress & Handoff Context (March 2026)
+A new AI coding agent should review this before continuing:
+
+1. **Fixed Orchestrator UI Reply Drops (`answerDirectly`)**: 
+   Previously, the `answerDirectly` tool only returned text to the internal loop, and text was dropped if the agent called `endConversation` immediately. We fixed this by passing the `reply` function into the `ToolContext` (`src/tools/registry.ts`, `src/agent.ts`) and actively invoking `ctx.reply(createChat(args.answer))` within `src/tools/orchestratorTools.ts`.
+2. **Fixed Minimax 400 Error (Agent 3)**:
+   Agent 3 (using `minimax/minimax-m2.5` over the Novita API) crashed with a HTTP 400 Bad Request. We determined the model's hard maximum output tokens is 131,072. We updated `config/agents.yaml`'s `max_tokens` for Agent 3 from 131,100 down to **131,072**.
+3. **Known Issue — Peer Chat Silent Failures**:
+   If the Orchestrator delegates a task via `chatWithAgent` rather than `assignTasks`, and a sub-agent replies with raw conversational text without explicitly triggering `markTaskDone`, the auto-converter in `src/agent.ts` may not format the completion correctly, causing the Orchestrator to hang or exit silently expecting a specific JSON payload.
+4. **Future Web UI Pivot**:
+   The user wants to migrate away from the bash CLI (`src/cli.ts`) towards a Web UI integration. An `implementation_plan.md` has been drafted suggesting a minimal Express + Socket.IO gateway (`src/server.ts`) that will mirror the CLI logic, wrapped with a React frontend.
