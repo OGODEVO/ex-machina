@@ -88,3 +88,20 @@ export const discoverAgentsTool: ToolSpec = {
         return `Currently online agents on AgentNet:\n\n${formattedList}`;
     },
 };
+
+/**
+ * Tool: endConversation
+ * Allows an agent to cleanly hang up the chat without replying.
+ */
+export const endConversationTool: ToolSpec = {
+    name: "endConversation",
+    description: "Call this tool ONLY when a peer-to-peer chat has naturally concluded and no further reply or thank you is needed. This will cleanly hang up the conversation.",
+    parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+    },
+    execute: async (_args: {}, _ctx) => {
+        return "Successfully ended the conversation.";
+    },
+};

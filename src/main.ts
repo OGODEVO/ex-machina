@@ -5,7 +5,7 @@ import { Agent } from "./agent.js";
 import { secrets, getAgentShellMode } from "./config.js";
 import { assignTasksTool, answerDirectlyTool, facilitateDebateTool } from "./tools/orchestratorTools.js";
 import { markTaskDoneTool, askQuestionTool, reportErrorTool } from "./tools/workerTools.js";
-import { chatWithAgentTool, discoverAgentsTool } from "./tools/sharedTools.js";
+import { chatWithAgentTool, discoverAgentsTool, endConversationTool } from "./tools/sharedTools.js";
 import { searchWebTool, deepSearchTool } from "./tools/searchTools.js";
 import { createShellTool } from "./tools/terminalTools.js";
 import { scrapePageTool, browserActionTool, closeBrowser } from "./tools/browserTools.js";
@@ -24,7 +24,7 @@ function loadPrompt(filename: string): string {
 
 /** Build the tools array for a worker agent, adding shell if configured in YAML. */
 function buildWorkerTools(agentId: string): ToolSpec[] {
-    const base = [markTaskDoneTool, askQuestionTool, reportErrorTool, chatWithAgentTool, discoverAgentsTool, searchWebTool, deepSearchTool];
+    const base = [markTaskDoneTool, askQuestionTool, reportErrorTool, chatWithAgentTool, discoverAgentsTool, endConversationTool, searchWebTool, deepSearchTool];
 
     const shellMode = getAgentShellMode(agentId);
     if (shellMode) {
@@ -50,7 +50,7 @@ async function main() {
         name: secrets.orchestratorName,
         systemPrompt: loadPrompt("orchestrator.txt") + `\n\n${agentProfiles}`,
         capabilities: ["orchestration", "search"],
-        tools: [assignTasksTool, answerDirectlyTool, facilitateDebateTool, chatWithAgentTool, discoverAgentsTool, searchWebTool, deepSearchTool],
+        tools: [assignTasksTool, answerDirectlyTool, facilitateDebateTool, chatWithAgentTool, discoverAgentsTool, endConversationTool, searchWebTool, deepSearchTool],
     });
 
     // 2. Agent 1

@@ -192,6 +192,18 @@ export class Agent {
 
                     console.log(`[${this.name}] Tool ${tc.name} returned: ${toolResult}`);
 
+                    if (tc.name === "markTaskDone" && toolResult.includes("Successfully sent [PROTOCOL: DONE]")) {
+                        // The agent successfully completed the task via tool selection.
+                        // Break out of the reasoning loop immediately so it doesn't try to parse
+                        // the success message and output more conversational text.
+                        return;
+                    }
+
+                    if (tc.name === "endConversation" && toolResult.includes("Successfully ended the conversation")) {
+                        console.log(`[${this.name}] explicitly ended the conversation.`);
+                        return;
+                    }
+
                     // Append the tool call and the result to the conversation context
                     messages.push({ role: "assistant", content: `(I called tool ${tc.name} with ${tc.arguments})` });
                     messages.push({ role: "user", content: `Tool Result: ${toolResult}\nEvaluate this result. If you need more information, call another tool. If you have finished your task, call the appropriate tool to complete it (e.g., markTaskDone). If you are chatting, you may respond directly.` });

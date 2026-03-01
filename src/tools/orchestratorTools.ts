@@ -222,13 +222,29 @@ export const facilitateDebateTool: ToolSpec = {
                                     parsedPayload = msg.payload;
                                 }
 
+                                // Helper function to recursively search for a matching payload type
+                                const findPayloadType = (obj: any, targetType: string): any => {
+                                    if (!obj || typeof obj !== "object") return null;
+                                    if (obj.type === targetType) return obj;
+
+                                    for (const key in obj) {
+                                        if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                                            const result = findPayloadType(obj[key], targetType);
+                                            if (result) return result;
+                                        }
+                                    }
+                                    return null;
+                                };
+
                                 if (parsedPayload) {
-                                    if (parsedPayload.type === "done") {
-                                        turnText = parsedPayload.text || "(Empty argument)";
+                                    const doneMsg = findPayloadType(parsedPayload, "done");
+                                    if (doneMsg) {
+                                        turnText = doneMsg.text || "(Empty argument)";
                                         break;
                                     }
-                                    if (parsedPayload.type === "blocked") {
-                                        turnText = `(Agent blocked: ${parsedPayload.text})`;
+                                    const blockedMsg = findPayloadType(parsedPayload, "blocked");
+                                    if (blockedMsg) {
+                                        turnText = `(Agent blocked: ${blockedMsg.text})`;
                                         break;
                                     }
                                 }
