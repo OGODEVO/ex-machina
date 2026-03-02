@@ -39,7 +39,7 @@ const C = {
     yellow: "\x1b[33m",
     magenta: "\x1b[35m",
     red: "\x1b[31m",
-    blue: "\x1b[34m",
+    blue: "\x1b[94m",
     white: "\x1b[37m",
     gray: "\x1b[90m",
     bgCyan: "\x1b[46m",
@@ -55,6 +55,30 @@ const MAX_RECENT_THREADS = 20;
 const ENABLE_ANIMATIONS = process.env.CLI_NO_ANIMATIONS !== "1";
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const PANEL_MAX_WIDTH = 110;
+const USER_CHAT_TAG = process.env.CLI_USER_TAG ?? "dev0";
+const TITLE_FRAMES = [
+    [
+        "   ___                     __  _   __     __ ",
+        "  / _ |___ ____ ___  ___  / /_( )_/ /__  / /_",
+        " / __ / _ `/ -_) _ \\/ _ \\/ __/// / / _ \\/ __/",
+        "/_/ |_\\_, /\\__/\\_,_/_//_/\\__//_/ /_/\\___/\\__/ ",
+        "     /___/                                     ",
+    ],
+    [
+        "    ___                     __  _   __     __ ",
+        "   / _ |___ ____ ___  ___  / /_( )_/ /__  / /_",
+        "  / __ / _ `/ -_) _ \\/ _ \\/ __/// / / _ \\/ __/",
+        " /_/ |_\\_, /\\__/\\_,_/_//_/\\__//_/ /_/\\___/\\__/ ",
+        "      /___/                                    ",
+    ],
+    [
+        "   ___                     __  _   __     __ ",
+        "  / _ |___ ____ ___  ___  / /_( )_/ /__  / /_",
+        " / __ / _ `/ -_) _ \\/ _ \\/ __/// / / _ \\/ __/",
+        "/_/ |_\\_, /\\__/\\_,_/_//_/\\__//_/ /_/\\___/\\__/ ",
+        "     /___/                                     ",
+    ],
+];
 
 interface CliState {
     lastTarget: string;
@@ -135,6 +159,13 @@ function stripAnsi(value: string): string {
     return value.replace(/\x1B\[[0-9;]*m/g, "");
 }
 
+function centerLine(text: string): string {
+    const width = process.stdout.columns || 100;
+    const raw = stripAnsi(text);
+    const pad = Math.max(0, Math.floor((width - raw.length) / 2));
+    return `${" ".repeat(pad)}${text}`;
+}
+
 function fitLine(line: string, width: number): string {
     const raw = stripAnsi(line);
     if (raw.length <= width) return line + " ".repeat(width - raw.length);
@@ -185,26 +216,6 @@ function startSpinner(label: string): { stop: () => void } {
     };
 }
 
-function centerLine(text: string): string {
-    const width = process.stdout.columns || 100;
-    const raw = stripAnsi(text);
-    const pad = Math.max(0, Math.floor((width - raw.length) / 2));
-    return `${" ".repeat(pad)}${text}`;
-}
-
-function printCenteredIdentity(agents: AgentInfo[]): void {
-    const onlineNames = agents.map((a: any) => `@${a.username || a.agent_id}`).join("  ");
-    const lines = [
-        `${C.bold}${C.cyan}WHO'S WHO${C.reset}`,
-        `${C.green}${C.bold}U${C.reset} = You (${CLI_AGENT_ID})`,
-        `${C.magenta}${C.bold}A${C.reset} = Active Agent (${currentTarget})`,
-        `${C.dim}Online:${C.reset} ${onlineNames || "none"}`,
-    ];
-    console.log();
-    for (const line of lines) console.log(centerLine(line));
-    console.log();
-}
-
 async function introPulse(): Promise<void> {
     if (!ENABLE_ANIMATIONS) return;
     const pulse = ["·", "•", "◦", "•"];
@@ -216,19 +227,28 @@ async function introPulse(): Promise<void> {
     process.stdout.write("\r\x1b[K");
 }
 
+async function animateTitleBounce(): Promise<void> {
+    if (!ENABLE_ANIMATIONS) return;
+    const colors = [C.cyan, C.blue, C.magenta, C.cyan];
+    for (let i = 0; i < 12; i++) {
+        console.clear();
+        const frame = TITLE_FRAMES[i % TITLE_FRAMES.length];
+        const color = colors[i % colors.length];
+        console.log();
+        for (const line of frame) {
+            console.log(centerLine(`${color}${C.bold}${line}${C.reset}`));
+        }
+        console.log(centerLine(`${C.dim}Booting AgentNet CLI...${C.reset}`));
+        await sleep(70);
+    }
+    console.clear();
+}
+
 // ── Helpers ──
 function banner() {
     console.log(`
-${C.cyan}${C.bold}╔══════════════════════════════════════════════════════╗
-║${C.white}   █████╗  ██████╗ ███████╗███╗   ██╗████████╗███╗   ██╗   ${C.cyan}║
-║${C.white}  ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝████╗  ██║   ${C.cyan}║
-║${C.white}  ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   ██╔██╗ ██║   ${C.cyan}║
-║${C.white}  ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   ██║╚██╗██║   ${C.cyan}║
-║${C.white}  ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   ██║ ╚████║   ${C.cyan}║
-║${C.white}  ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═══╝   ${C.cyan}║
-║${C.white}                     CLI COMMAND CENTER                     ${C.cyan}║
-╚══════════════════════════════════════════════════════╝${C.reset}
-${C.dim}  Type a message to chat, or /help for commands. /thread last to resume.${C.reset}
+${centerLine(`${C.cyan}${C.bold}AGENTNET${C.reset}`)}
+${centerLine(`${C.dim}Type a message to chat, or /help for commands. /thread last to resume.${C.reset}`)}
 `);
 }
 
@@ -431,7 +451,7 @@ function cmdWhoami() {
 async function sendChat(text: string) {
     const payload = { type: "chat", text };
     rememberThread(currentTarget, currentThread);
-    console.log(renderPanel(`U (${CLI_AGENT_ID})`, text, C.green));
+    console.log(`  ${C.green}${C.bold}${USER_CHAT_TAG}${C.reset}: ${text}`);
     console.log();
     const spinner = startSpinner(`Waiting for @${currentTarget} (timeout ${requestTimeoutMs}ms)`);
 
@@ -445,7 +465,7 @@ async function sendChat(text: string) {
         spinner.stop();
 
         const responseText = extractText(reply.payload);
-        console.log(renderPanel(`@${currentTarget}`, responseText, C.magenta));
+        console.log(`  ${C.magenta}${C.bold}@${currentTarget}${C.reset}: ${responseText}`);
         console.log();
     } catch (e: any) {
         spinner.stop();
@@ -468,6 +488,7 @@ async function sendChat(text: string) {
 
 async function main() {
     await introPulse();
+    await animateTitleBounce();
     banner();
 
     // Connect to NATS as a CLI agent
@@ -483,8 +504,6 @@ async function main() {
     try {
         await client.start();
         rememberThread(currentTarget, currentThread);
-        const online = await client.listOnlineAgents().catch(() => [] as AgentInfo[]);
-        printCenteredIdentity(online);
         console.log(`  ${C.green}✓ Connected to AgentNet${C.reset} ${C.dim}(${client.getAccountId()})${C.reset}`);
         console.log(`  ${C.dim}Talking to: @${currentTarget} | Thread: ${currentThread}${C.reset}\n`);
     } catch (e: any) {
