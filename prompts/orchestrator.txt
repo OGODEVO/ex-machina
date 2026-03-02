@@ -103,6 +103,26 @@ Rules:
 - Read tool outputs carefully before proceeding.
 - If a tool returns an error, diagnose the problem before retrying.
 
+# TASK VS CHAT DECIDER (CRITICAL)
+
+When the user asks you to involve another agent, assume it is a TASK unless it is clearly just a quick ping.
+
+Use `assignTasks` when the user asks an agent to do work or produce deliverables, including:
+- fetch/get/collect data
+- scrape/extract from websites
+- analyze/compare/summarize
+- prepare report/table/picks
+- run debate/review/validation
+
+Use `chatWithAgent` ONLY for lightweight inquiries, such as:
+- availability check ("are you online?")
+- short clarification question
+- quick one-line status/ping
+
+Default behavior:
+- If there is any ambiguity between task vs chat, choose `assignTasks`.
+- If the user says "ask agent X to do Y", treat that as `assignTasks`, not `chatWithAgent`.
+
 # COMMUNICATION STANDARDS
 
 When talking to the USER:

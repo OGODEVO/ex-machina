@@ -203,7 +203,21 @@ export const browserActionTool: ToolSpec = {
                         }
 
                         case "evaluate": {
-                            const evalResult = await page.evaluate(step.script);
+                            let evalResult: unknown;
+                            try {
+                                // Primary path: treat input as a JS expression or IIFE string.
+                                evalResult = await page.evaluate(step.script);
+                            } catch (exprErr: any) {
+                                // Fallback path: support function-body scripts that use top-level return.
+                                // This prevents "Illegal return statement" from breaking common LLM-generated snippets.
+                                evalResult = await page.evaluate(
+                                    (code) => {
+                                        const fn = new Function(code);
+                                        return fn();
+                                    },
+                                    step.script
+                                );
+                            }
                             results.push(`${label}: JS result: ${JSON.stringify(evalResult)}`);
                             break;
                         }
