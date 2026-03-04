@@ -529,12 +529,15 @@ export const runAutonomousNbaPickTool: ToolSpec = {
         const vote3 = parseDebateVote("agent3", turnsByAgent.agent3.at(-1) ?? "", teamA, teamB);
         const orchestratorVote = computeOrchestratorVote(vote1, vote3);
         const tally = tallyVotes(vote1, vote3, orchestratorVote);
-        const finalPick = resolveFinalPick(tally.winner, vote1, vote3, orchestratorVote, teamA, teamB);
+        const finalPick = resolveFinalPick(tally.winnerKey, vote1, vote3, orchestratorVote);
+        const tallyText = Array.from(tally.counts.entries())
+            .map(([k, v]) => `${k}=${v}`)
+            .join(", ");
         const votingSummary = [
             `Agent1 vote: ${vote1.pick} (confidence ${vote1.confidence})`,
             `Agent3 vote: ${vote3.pick} (confidence ${vote3.confidence})`,
             `Orchestrator vote: ${orchestratorVote.pick} (${orchestratorVote.reason})`,
-            `Vote tally: ${teamA}=${tally.teamA}, ${teamB}=${tally.teamB}, unknown=${tally.unknown}`,
+            `Vote tally: ${tallyText}`,
         ].join("\n");
 
         return [
@@ -578,11 +581,9 @@ interface MetricQueryResult extends MetricQueryPlan {
     ok: boolean;
 }
 
-type DebateSide = "teamA" | "teamB" | "unknown";
-
 interface DebateVote {
     agent: "agent1" | "agent3" | "orchestrator";
-    side: DebateSide;
+    pickKey: string;
     pick: string;
     confidence: number;
     updatedInsight: string;
@@ -657,18 +658,19 @@ function parseDebateVote(
     teamA: string,
     teamB: string
 ): DebateVote {
-    const finalPick = matchOne(turnText, /FINAL_PICK:\s*(.+)$/im)
+    const rawPick = matchOne(turnText, /FINAL_PICK:\s*(.+)$/im)
         ?? matchOne(turnText, /Position:\s*(.+)$/im)
         ?? "No explicit pick";
+    const finalPick = sanitizePickText(rawPick);
     const confidenceRaw = Number.parseInt(matchOne(turnText, /CONFIDENCE:\s*(\d{1,3})/im) ?? "55", 10);
     const confidence = Number.isFinite(confidenceRaw) ? Math.max(0, Math.min(100, confidenceRaw)) : 55;
     const updatedInsight = matchOne(turnText, /UPDATED_INSIGHT:\s*(.+)$/im) ?? "";
     const evidence = Array.from(turnText.matchAll(/EVIDENCE_\d+:\s*(.+)$/gim)).map((m) => m[1].trim()).slice(0, 3);
-    const side = inferPickSide(finalPick, teamA, teamB);
+    const pickKey = normalizePickKey(finalPick, teamA, teamB);
 
     return {
         agent,
-        side,
+        pickKey,
         pick: finalPick.trim(),
         confidence,
         updatedInsight,
@@ -677,22 +679,22 @@ function parseDebateVote(
 }
 
 function computeOrchestratorVote(v1: DebateVote, v3: DebateVote): DebateVote {
-    if (v1.side !== "unknown" && v1.side === v3.side) {
+    if (v1.pickKey !== "UNKNOWN" && v1.pickKey === v3.pickKey) {
         return {
             agent: "orchestrator",
-            side: v1.side,
-            pick: v1.side === "teamA" ? v1.pick : v3.pick,
+            pickKey: v1.pickKey,
+            pick: v1.pick,
             confidence: Math.round((v1.confidence + v3.confidence) / 2),
             updatedInsight: "",
             evidence: [],
-            reason: "Both agents aligned on same side.",
+            reason: "Both agents aligned on same pick.",
         };
     }
 
-    if (v1.side === "unknown" && v3.side !== "unknown") {
+    if (v1.pickKey === "UNKNOWN" && v3.pickKey !== "UNKNOWN") {
         return {
             agent: "orchestrator",
-            side: v3.side,
+            pickKey: v3.pickKey,
             pick: v3.pick,
             confidence: v3.confidence,
             updatedInsight: "",
@@ -700,10 +702,10 @@ function computeOrchestratorVote(v1: DebateVote, v3: DebateVote): DebateVote {
             reason: "Agent1 pick was unparseable; sided with Agent3.",
         };
     }
-    if (v3.side === "unknown" && v1.side !== "unknown") {
+    if (v3.pickKey === "UNKNOWN" && v1.pickKey !== "UNKNOWN") {
         return {
             agent: "orchestrator",
-            side: v1.side,
+            pickKey: v1.pickKey,
             pick: v1.pick,
             confidence: v1.confidence,
             updatedInsight: "",
@@ -720,7 +722,7 @@ function computeOrchestratorVote(v1: DebateVote, v3: DebateVote): DebateVote {
     if (s1 > s3) {
         return {
             agent: "orchestrator",
-            side: v1.side,
+            pickKey: v1.pickKey,
             pick: v1.pick,
             confidence: v1.confidence,
             updatedInsight: "",
@@ -731,7 +733,7 @@ function computeOrchestratorVote(v1: DebateVote, v3: DebateVote): DebateVote {
     if (s3 > s1) {
         return {
             agent: "orchestrator",
-            side: v3.side,
+            pickKey: v3.pickKey,
             pick: v3.pick,
             confidence: v3.confidence,
             updatedInsight: "",
@@ -743,7 +745,7 @@ function computeOrchestratorVote(v1: DebateVote, v3: DebateVote): DebateVote {
     // Deterministic fallback.
     return {
         agent: "orchestrator",
-        side: v1.side,
+        pickKey: v1.pickKey,
         pick: v1.pick,
         confidence: v1.confidence,
         updatedInsight: "",
@@ -752,50 +754,83 @@ function computeOrchestratorVote(v1: DebateVote, v3: DebateVote): DebateVote {
     };
 }
 
-function tallyVotes(v1: DebateVote, v3: DebateVote, o: DebateVote): { teamA: number; teamB: number; unknown: number; winner: DebateSide } {
-    const votes: DebateSide[] = [v1.side, v3.side, o.side];
-    const teamA = votes.filter((v) => v === "teamA").length;
-    const teamB = votes.filter((v) => v === "teamB").length;
-    const unknown = votes.filter((v) => v === "unknown").length;
-    const winner: DebateSide = teamA > teamB ? "teamA" : teamB > teamA ? "teamB" : "unknown";
-    return { teamA, teamB, unknown, winner };
+function tallyVotes(v1: DebateVote, v3: DebateVote, o: DebateVote): { counts: Map<string, number>; winnerKey: string } {
+    const counts = new Map<string, number>();
+    for (const key of [v1.pickKey, v3.pickKey, o.pickKey]) {
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+
+    let winnerKey = "UNKNOWN";
+    let winnerCount = 0;
+    for (const [key, count] of counts.entries()) {
+        if (count > winnerCount) {
+            winnerKey = key;
+            winnerCount = count;
+        } else if (count === winnerCount) {
+            winnerKey = "UNKNOWN";
+        }
+    }
+
+    return { counts, winnerKey };
 }
 
 function resolveFinalPick(
-    winner: DebateSide,
+    winnerKey: string,
     v1: DebateVote,
     v3: DebateVote,
-    o: DebateVote,
-    teamA: string,
-    teamB: string
+    o: DebateVote
 ): string {
-    if (winner === "teamA") return findFirstPickForSide("teamA", v1, v3, o) ?? `${teamA} (by vote majority)`;
-    if (winner === "teamB") return findFirstPickForSide("teamB", v1, v3, o) ?? `${teamB} (by vote majority)`;
+    if (winnerKey !== "UNKNOWN") return findFirstPickForKey(winnerKey, v1, v3, o) ?? winnerKey;
     return "NO CONSENSUS (unable to determine a clear majority side).";
 }
 
-function findFirstPickForSide(side: DebateSide, ...votes: DebateVote[]): string | null {
+function findFirstPickForKey(key: string, ...votes: DebateVote[]): string | null {
     for (const vote of votes) {
-        if (vote.side === side && vote.pick.trim()) return vote.pick.trim();
+        if (vote.pickKey === key && vote.pick.trim()) return vote.pick.trim();
     }
     return null;
 }
 
-function inferPickSide(pick: string, teamA: string, teamB: string): DebateSide {
-    const lower = pick.toLowerCase();
+function normalizePickKey(pick: string, teamA: string, teamB: string): string {
+    const text = sanitizePickText(pick);
+    if (!text || /no explicit pick/i.test(text)) return "UNKNOWN";
+
+    const overUnder = text.match(/\b(over|under)\s+(\d+(?:\.\d+)?)\b/i);
+    if (overUnder) return `${overUnder[1].toUpperCase()} ${overUnder[2]}`;
+
+    const ml = text.match(/\b(ml|moneyline)\b/i);
+    if (ml) {
+        const side = inferTeamSide(text, teamA, teamB);
+        if (side !== "UNKNOWN") return `${side} MONEYLINE`;
+    }
+
+    const spread = text.match(/([+-]\d+(?:\.\d+)?)/);
+    if (spread) {
+        const side = inferTeamSide(text, teamA, teamB);
+        if (side !== "UNKNOWN") return `${side} ${spread[1]}`;
+    }
+
+    const sideOnly = inferTeamSide(text, teamA, teamB);
+    if (sideOnly !== "UNKNOWN") return sideOnly;
+
+    return text.toUpperCase();
+}
+
+function inferTeamSide(text: string, teamA: string, teamB: string): string {
+    const lower = text.toLowerCase();
     const a = teamKeywords(teamA);
     const b = teamKeywords(teamB);
     const hasA = a.some((token) => token && lower.includes(token));
     const hasB = b.some((token) => token && lower.includes(token));
 
-    if (hasA && !hasB) return "teamA";
-    if (hasB && !hasA) return "teamB";
+    if (hasA && !hasB) return teamA.toUpperCase();
+    if (hasB && !hasA) return teamB.toUpperCase();
     if (hasA && hasB) {
         const idxA = firstKeywordIndex(lower, a);
         const idxB = firstKeywordIndex(lower, b);
-        if (idxA >= 0 && idxB >= 0) return idxA <= idxB ? "teamA" : "teamB";
+        if (idxA >= 0 && idxB >= 0) return idxA <= idxB ? teamA.toUpperCase() : teamB.toUpperCase();
     }
-    return "unknown";
+    return "UNKNOWN";
 }
 
 function firstKeywordIndex(text: string, keywords: string[]): number {
@@ -812,6 +847,16 @@ function teamKeywords(team: string): string[] {
     const parts = normalized.split(/\s+/).filter(Boolean);
     const last = parts.length > 0 ? parts[parts.length - 1] : normalized;
     return Array.from(new Set([normalized, last])).filter((t) => t.length >= 2);
+}
+
+function sanitizePickText(pick: string): string {
+    const cleaned = pick
+        .replace(/\s+/g, " ")
+        .replace(/[—–]/g, "-")
+        .replace(/,\s*CONFIDENCE\s*:\s*\d{1,3}\b/i, "")
+        .replace(/\s*confidence\s*\d{1,3}\b/i, "")
+        .trim();
+    return cleaned;
 }
 
 function matchOne(text: string, pattern: RegExp): string | null {
