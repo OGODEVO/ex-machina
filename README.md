@@ -16,6 +16,36 @@ Multi-agent runtime with:
 - `config/agents.yaml`: per-agent model routing
 - `src/cli.ts`: interactive CLI client (`/talk`, `/thread`, `/history`, etc.)
 
+## How Agents Use the Network (Testing Guide)
+
+### Message Flow
+1. CLI sends a user message to `orchestrator_v1` on a thread.
+2. Orchestrator decides whether to:
+- answer directly, or
+- delegate to workers (`agent1/agent2/agent3`) on peer threads.
+3. Worker returns terminal status (`DONE` / `BLOCKED`) back to Orchestrator.
+4. Orchestrator synthesizes and replies to the user on the main thread.
+
+### Thread Model
+- Main user thread: user-facing conversation.
+- Peer threads: `mainThread::agentX_orchestrator_v1::rN` for internal worker exchange.
+- Debate threads: `debate_<timestamp>` for multi-round agent debates.
+
+### Discovery and the Mini Advantage
+- `discoverAgents` lets an agent see who is online and what capabilities are active.
+- Mini advantage:
+- avoids assigning tasks to offline agents
+- reduces wrong-agent routing
+- speeds up debugging when capabilities/config changed
+- Use it when testing startup, routing changes, or model/tool swaps.
+
+### How We Use It in Practice
+- Boot runtime: `npm run dev`
+- Open CLI: `npm run cli`
+- Check online mesh: `/agents`
+- Use stable context: `/thread last`
+- If a reply times out, inspect late completion: `/history`
+
 ## Prerequisites
 
 - Node.js 22+
