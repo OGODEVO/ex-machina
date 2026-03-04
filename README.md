@@ -16,35 +16,38 @@ Multi-agent runtime with:
 - `config/agents.yaml`: per-agent model routing
 - `src/cli.ts`: interactive CLI client (`/talk`, `/thread`, `/history`, etc.)
 
-## How Agents Use the Network (Testing Guide)
+## Why the Network Matters
 
-### Message Flow
-1. CLI sends a user message to `orchestrator_v1` on a thread.
-2. Orchestrator decides whether to:
-- answer directly, or
-- delegate to workers (`agent1/agent2/agent3`) on peer threads.
-3. Worker returns terminal status (`DONE` / `BLOCKED`) back to Orchestrator.
-4. Orchestrator synthesizes and replies to the user on the main thread.
+The network is what makes multi-agent work possible.
 
-### Thread Model
-- Main user thread: user-facing conversation.
-- Peer threads: `mainThread::agentX_orchestrator_v1::rN` for internal worker exchange.
-- Debate threads: `debate_<timestamp>` for multi-round agent debates.
+- It lets all agents talk to each other in real time.
+- It keeps conversations organized by thread.
+- It makes sure tasks can be handed off and returned cleanly.
 
-### Discovery and the Mini Advantage
-- `discoverAgents` lets an agent see who is online and what capabilities are active.
-- Mini advantage:
+Simple flow:
+1. You send a message to Agent 0 (Orchestrator).
+2. Agent 0 gives work to Agent 1/2/3 when needed.
+3. Workers send results back to Agent 0.
+4. Agent 0 sends one final answer back to you.
+
+Without the network, agents act like isolated bots.  
+With the network, they behave like a coordinated team.
+
+## Discovery (Why We Use It)
+
+`discoverAgents` checks who is online and what each agent can do.
+
+This helps because it:
 - avoids assigning tasks to offline agents
-- reduces wrong-agent routing
-- speeds up debugging when capabilities/config changed
-- Use it when testing startup, routing changes, or model/tool swaps.
+- avoids sending work to the wrong agent
+- makes testing and debugging faster after config/model changes
 
-### How We Use It in Practice
-- Boot runtime: `npm run dev`
-- Open CLI: `npm run cli`
-- Check online mesh: `/agents`
-- Use stable context: `/thread last`
-- If a reply times out, inspect late completion: `/history`
+Quick test flow:
+- start runtime: `npm run dev`
+- open CLI: `npm run cli`
+- check agents: `/agents`
+- continue old convo: `/thread last`
+- check delayed replies: `/history`
 
 ## Prerequisites
 
