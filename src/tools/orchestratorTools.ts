@@ -335,50 +335,50 @@ export const runAutonomousNbaPickTool: ToolSpec = {
             {
                 key: "odds",
                 label: "Market Odds",
-                query: `${teamA} vs ${teamB} betting odds spread moneyline over under today ${today}`,
+                query: `${teamA} vs ${teamB} betting odds spread moneyline over under 2025-26 NBA today ${today}`,
             },
             {
                 key: "ats_team_a",
                 label: `${teamA} ATS Profile`,
-                query: `${teamA} against the spread ATS record 2025-26 season and last 10 games`,
+                query: `${teamA} against the spread ATS record 2025-26 NBA season and last 10 games`,
             },
             {
                 key: "ats_team_b",
                 label: `${teamB} ATS Profile`,
-                query: `${teamB} against the spread ATS record 2025-26 season and last 10 games`,
+                query: `${teamB} against the spread ATS record 2025-26 NBA season and last 10 games`,
             },
             {
                 key: "last10_team_a",
                 label: `${teamA} Last-10 Form`,
-                query: `${teamA} last 10 games record points per game points allowed net rating 2025-26`,
+                query: `${teamA} last 10 games record points per game points allowed net rating 2025-26 NBA`,
             },
             {
                 key: "last10_team_b",
                 label: `${teamB} Last-10 Form`,
-                query: `${teamB} last 10 games record points per game points allowed net rating 2025-26`,
+                query: `${teamB} last 10 games record points per game points allowed net rating 2025-26 NBA`,
             },
             {
                 key: "home_away_team_a",
                 label: `${teamA} Home/Away Splits`,
-                query: `${teamA} home record away record home points per game away points per game 2025-26`,
+                query: `${teamA} home record away record home points per game away points per game 2025-26 NBA`,
             },
             {
                 key: "home_away_team_b",
                 label: `${teamB} Home/Away Splits`,
-                query: `${teamB} home record away record home points per game away points per game 2025-26`,
+                query: `${teamB} home record away record home points per game away points per game 2025-26 NBA`,
             },
             {
                 key: "h2h_last3",
                 label: "Head-to-Head Last 3",
-                query: `${teamA} vs ${teamB} last 3 games scores and ATS results`,
+                query: `${teamA} vs ${teamB} last 3 games scores and ATS results 2025-26 NBA season`,
             },
         ];
 
         const metricResults: MetricQueryResult[] = await Promise.all(metricsPlan.map(async (plan) => {
-            const output = String(await searchWebTool.execute({
+            const output = stripStaleSeasonLines(String(await searchWebTool.execute({
                 query: plan.query,
                 maxResults: 4,
-            }, ctx));
+            }, ctx)));
             return {
                 key: plan.key,
                 label: plan.label,
@@ -438,6 +438,12 @@ export const runAutonomousNbaPickTool: ToolSpec = {
         if (!hasHomeAwayNumbers(metricsByKey.home_away_team_a?.output ?? "")) missing.push(`${teamA}_home_away_numeric`);
         if (!hasHomeAwayNumbers(metricsByKey.home_away_team_b?.output ?? "")) missing.push(`${teamB}_home_away_numeric`);
         if (!hasH2HNumbers(metricsByKey.h2h_last3?.output ?? "")) missing.push("h2h_last3_numeric");
+        if (!hasCurrentSeasonSignal(metricsByKey.ats_team_a?.output ?? "")) missing.push(`${teamA}_ats_season_2025_26`);
+        if (!hasCurrentSeasonSignal(metricsByKey.ats_team_b?.output ?? "")) missing.push(`${teamB}_ats_season_2025_26`);
+        if (!hasCurrentSeasonSignal(metricsByKey.last10_team_a?.output ?? "")) missing.push(`${teamA}_last10_season_2025_26`);
+        if (!hasCurrentSeasonSignal(metricsByKey.last10_team_b?.output ?? "")) missing.push(`${teamB}_last10_season_2025_26`);
+        if (!hasCurrentSeasonSignal(metricsByKey.home_away_team_a?.output ?? "")) missing.push(`${teamA}_home_away_season_2025_26`);
+        if (!hasCurrentSeasonSignal(metricsByKey.home_away_team_b?.output ?? "")) missing.push(`${teamB}_home_away_season_2025_26`);
 
         if (missing.length > 0) {
             return [
@@ -456,6 +462,10 @@ export const runAutonomousNbaPickTool: ToolSpec = {
         const debaters: Array<"agent1" | "agent3"> = ["agent1", "agent3"];
         let transcript = `DEBATE TOPIC: ${teamA} vs ${teamB}\nROUNDS: ${rounds}\nPARTICIPANTS: ${debaters.join(", ")}\n\n`;
         let history = `Use ONLY the report sheet below. Do NOT add outside facts.\n\n${mergedDossier}\n\n`;
+        const turnsByAgent: Record<"agent1" | "agent3", string[]> = {
+            agent1: [],
+            agent3: [],
+        };
 
         const requestDebateTurn = async (speaker: "agent1" | "agent3", prompt: string): Promise<string> => {
             const reply = await ctx.bridge!.requestMessage(
@@ -484,7 +494,15 @@ export const runAutonomousNbaPickTool: ToolSpec = {
                         `Hard rules:`,
                         `- Use ONLY numbers/facts in the report sheet.`,
                         `- Do NOT call tools except markTaskDone.`,
+                        `- Debate to DISCOVER the best pick, not to stubbornly defend your first take.`,
                         `- Include one line starting with "Position:".`,
+                        `- Include one line starting with "Updated Insight:" that reflects what you learned from the other agent.`,
+                        `- End with this exact block:`,
+                        `FINAL_PICK: <single pick>`,
+                        `CONFIDENCE: <0-100>`,
+                        `EVIDENCE_1: <fact from sheet>`,
+                        `EVIDENCE_2: <fact from sheet>`,
+                        `EVIDENCE_3: <fact from sheet>`,
                         `- Keep concise (120-220 words).`,
                         `- End by calling markTaskDone with your turn.`,
                         i === 0 ? `Counterpoint requirement: challenge ${other}'s prior claim.` : `Counterpoint requirement: directly rebut ${other}.`,
@@ -492,6 +510,7 @@ export const runAutonomousNbaPickTool: ToolSpec = {
                     const turn = await requestDebateTurn(speaker, prompt);
                     transcript += `**${speaker.toUpperCase()}**:\n${turn}\n\n`;
                     history += `\n[${speaker}] ${turn}\n`;
+                    turnsByAgent[speaker].push(turn);
                 }
             }
         } catch (err: any) {
@@ -506,8 +525,17 @@ export const runAutonomousNbaPickTool: ToolSpec = {
             ].join("\n");
         }
 
-        const positions = Array.from(transcript.matchAll(/Position:\s*(.+)$/gim)).map((m) => m[1].trim());
-        const finalPosition = positions.length > 0 ? positions[positions.length - 1] : "No explicit final position extracted.";
+        const vote1 = parseDebateVote("agent1", turnsByAgent.agent1.at(-1) ?? "", teamA, teamB);
+        const vote3 = parseDebateVote("agent3", turnsByAgent.agent3.at(-1) ?? "", teamA, teamB);
+        const orchestratorVote = computeOrchestratorVote(vote1, vote3);
+        const tally = tallyVotes(vote1, vote3, orchestratorVote);
+        const finalPick = resolveFinalPick(tally.winner, vote1, vote3, orchestratorVote, teamA, teamB);
+        const votingSummary = [
+            `Agent1 vote: ${vote1.pick} (confidence ${vote1.confidence})`,
+            `Agent3 vote: ${vote3.pick} (confidence ${vote3.confidence})`,
+            `Orchestrator vote: ${orchestratorVote.pick} (${orchestratorVote.reason})`,
+            `Vote tally: ${teamA}=${tally.teamA}, ${teamB}=${tally.teamB}, unknown=${tally.unknown}`,
+        ].join("\n");
 
         return [
             `[AUTONBA_FINAL]`,
@@ -520,8 +548,11 @@ export const runAutonomousNbaPickTool: ToolSpec = {
             ``,
             `=== DEBATE TRANSCRIPT ===`,
             transcript,
+            ``,
+            `=== VOTING SUMMARY ===`,
+            votingSummary,
             `=== FINAL PICK ===`,
-            finalPosition,
+            finalPick,
         ].join("\n");
     },
 };
@@ -547,6 +578,18 @@ interface MetricQueryResult extends MetricQueryPlan {
     ok: boolean;
 }
 
+type DebateSide = "teamA" | "teamB" | "unknown";
+
+interface DebateVote {
+    agent: "agent1" | "agent3" | "orchestrator";
+    side: DebateSide;
+    pick: string;
+    confidence: number;
+    updatedInsight: string;
+    evidence: string[];
+    reason?: string;
+}
+
 function looksLikeSearchFailure(text: string): boolean {
     const lower = text.toLowerCase().trim();
     return (
@@ -557,6 +600,16 @@ function looksLikeSearchFailure(text: string): boolean {
         || lower.includes("circuit-breaker")
         || lower.includes("timed out")
     );
+}
+
+function stripStaleSeasonLines(text: string): string {
+    const lines = text.split("\n");
+    const filtered = lines.filter((line) => !/\b(?:2024-25|2023-24|2022-23|2021-22)\b/.test(line));
+    return filtered.join("\n");
+}
+
+function hasCurrentSeasonSignal(text: string): boolean {
+    return /\b2025-26\b|\b2026\b/.test(text);
 }
 
 function hasRecordPair(text: string): boolean {
@@ -596,6 +649,174 @@ function hasH2HNumbers(text: string): boolean {
     const hasLast3 = /last 3|last three/i.test(text);
     const hasGameNumbers = hasScorePair(text) || hasRecordPair(text);
     return hasH2hTerms && hasLast3 && hasGameNumbers && !looksLikeSearchFailure(text);
+}
+
+function parseDebateVote(
+    agent: "agent1" | "agent3",
+    turnText: string,
+    teamA: string,
+    teamB: string
+): DebateVote {
+    const finalPick = matchOne(turnText, /FINAL_PICK:\s*(.+)$/im)
+        ?? matchOne(turnText, /Position:\s*(.+)$/im)
+        ?? "No explicit pick";
+    const confidenceRaw = Number.parseInt(matchOne(turnText, /CONFIDENCE:\s*(\d{1,3})/im) ?? "55", 10);
+    const confidence = Number.isFinite(confidenceRaw) ? Math.max(0, Math.min(100, confidenceRaw)) : 55;
+    const updatedInsight = matchOne(turnText, /UPDATED_INSIGHT:\s*(.+)$/im) ?? "";
+    const evidence = Array.from(turnText.matchAll(/EVIDENCE_\d+:\s*(.+)$/gim)).map((m) => m[1].trim()).slice(0, 3);
+    const side = inferPickSide(finalPick, teamA, teamB);
+
+    return {
+        agent,
+        side,
+        pick: finalPick.trim(),
+        confidence,
+        updatedInsight,
+        evidence,
+    };
+}
+
+function computeOrchestratorVote(v1: DebateVote, v3: DebateVote): DebateVote {
+    if (v1.side !== "unknown" && v1.side === v3.side) {
+        return {
+            agent: "orchestrator",
+            side: v1.side,
+            pick: v1.side === "teamA" ? v1.pick : v3.pick,
+            confidence: Math.round((v1.confidence + v3.confidence) / 2),
+            updatedInsight: "",
+            evidence: [],
+            reason: "Both agents aligned on same side.",
+        };
+    }
+
+    if (v1.side === "unknown" && v3.side !== "unknown") {
+        return {
+            agent: "orchestrator",
+            side: v3.side,
+            pick: v3.pick,
+            confidence: v3.confidence,
+            updatedInsight: "",
+            evidence: [],
+            reason: "Agent1 pick was unparseable; sided with Agent3.",
+        };
+    }
+    if (v3.side === "unknown" && v1.side !== "unknown") {
+        return {
+            agent: "orchestrator",
+            side: v1.side,
+            pick: v1.pick,
+            confidence: v1.confidence,
+            updatedInsight: "",
+            evidence: [],
+            reason: "Agent3 pick was unparseable; sided with Agent1.",
+        };
+    }
+
+    // Split case: Agent0 tie-break vote by confidence + evidence quality.
+    const score = (v: DebateVote) => v.confidence + (v.evidence.length * 4) + (v.updatedInsight ? 3 : 0);
+    const s1 = score(v1);
+    const s3 = score(v3);
+
+    if (s1 > s3) {
+        return {
+            agent: "orchestrator",
+            side: v1.side,
+            pick: v1.pick,
+            confidence: v1.confidence,
+            updatedInsight: "",
+            evidence: [],
+            reason: `Tie-break to Agent1 (score ${s1} vs ${s3}).`,
+        };
+    }
+    if (s3 > s1) {
+        return {
+            agent: "orchestrator",
+            side: v3.side,
+            pick: v3.pick,
+            confidence: v3.confidence,
+            updatedInsight: "",
+            evidence: [],
+            reason: `Tie-break to Agent3 (score ${s3} vs ${s1}).`,
+        };
+    }
+
+    // Deterministic fallback.
+    return {
+        agent: "orchestrator",
+        side: v1.side,
+        pick: v1.pick,
+        confidence: v1.confidence,
+        updatedInsight: "",
+        evidence: [],
+        reason: "Tie-break scores equal; defaulted to Agent1 for determinism.",
+    };
+}
+
+function tallyVotes(v1: DebateVote, v3: DebateVote, o: DebateVote): { teamA: number; teamB: number; unknown: number; winner: DebateSide } {
+    const votes: DebateSide[] = [v1.side, v3.side, o.side];
+    const teamA = votes.filter((v) => v === "teamA").length;
+    const teamB = votes.filter((v) => v === "teamB").length;
+    const unknown = votes.filter((v) => v === "unknown").length;
+    const winner: DebateSide = teamA > teamB ? "teamA" : teamB > teamA ? "teamB" : "unknown";
+    return { teamA, teamB, unknown, winner };
+}
+
+function resolveFinalPick(
+    winner: DebateSide,
+    v1: DebateVote,
+    v3: DebateVote,
+    o: DebateVote,
+    teamA: string,
+    teamB: string
+): string {
+    if (winner === "teamA") return findFirstPickForSide("teamA", v1, v3, o) ?? `${teamA} (by vote majority)`;
+    if (winner === "teamB") return findFirstPickForSide("teamB", v1, v3, o) ?? `${teamB} (by vote majority)`;
+    return "NO CONSENSUS (unable to determine a clear majority side).";
+}
+
+function findFirstPickForSide(side: DebateSide, ...votes: DebateVote[]): string | null {
+    for (const vote of votes) {
+        if (vote.side === side && vote.pick.trim()) return vote.pick.trim();
+    }
+    return null;
+}
+
+function inferPickSide(pick: string, teamA: string, teamB: string): DebateSide {
+    const lower = pick.toLowerCase();
+    const a = teamKeywords(teamA);
+    const b = teamKeywords(teamB);
+    const hasA = a.some((token) => token && lower.includes(token));
+    const hasB = b.some((token) => token && lower.includes(token));
+
+    if (hasA && !hasB) return "teamA";
+    if (hasB && !hasA) return "teamB";
+    if (hasA && hasB) {
+        const idxA = firstKeywordIndex(lower, a);
+        const idxB = firstKeywordIndex(lower, b);
+        if (idxA >= 0 && idxB >= 0) return idxA <= idxB ? "teamA" : "teamB";
+    }
+    return "unknown";
+}
+
+function firstKeywordIndex(text: string, keywords: string[]): number {
+    let best = -1;
+    for (const k of keywords) {
+        const idx = text.indexOf(k);
+        if (idx >= 0 && (best === -1 || idx < best)) best = idx;
+    }
+    return best;
+}
+
+function teamKeywords(team: string): string[] {
+    const normalized = team.toLowerCase().trim();
+    const parts = normalized.split(/\s+/).filter(Boolean);
+    const last = parts.length > 0 ? parts[parts.length - 1] : normalized;
+    return Array.from(new Set([normalized, last])).filter((t) => t.length >= 2);
+}
+
+function matchOne(text: string, pattern: RegExp): string | null {
+    const m = text.match(pattern);
+    return m?.[1]?.trim() ?? null;
 }
 
 function parseProtocolPayload(value: unknown): any {
