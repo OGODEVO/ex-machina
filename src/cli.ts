@@ -55,7 +55,6 @@ const MAX_RECENT_THREADS = 20;
 const ENABLE_ANIMATIONS = process.env.CLI_NO_ANIMATIONS !== "1";
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const PANEL_MAX_WIDTH = 110;
-const USER_CHAT_TAG = process.env.CLI_USER_TAG ?? "dev0";
 const TITLE_FRAMES = [
     [
         "   ___                     __  _   __     __ ",
@@ -451,8 +450,6 @@ function cmdWhoami() {
 async function sendChat(text: string) {
     const payload = { type: "chat", text };
     rememberThread(currentTarget, currentThread);
-    console.log(`  ${C.green}${C.bold}${USER_CHAT_TAG}${C.reset}: ${text}`);
-    console.log();
     const spinner = startSpinner(`Waiting for @${currentTarget} (timeout ${requestTimeoutMs}ms)`);
 
     try {

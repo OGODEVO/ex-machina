@@ -2,8 +2,8 @@
 # Secrets (API keys) stay in .env — this file is for model routing only.
 
 orchestrator:
-  model: zai-org/glm-5
-  base_url: https://api.novita.ai/openai
+  model: gpt-5.2
+  base_url: https://api.openai.com/v1
   max_tokens: 128000
 
 agent1:

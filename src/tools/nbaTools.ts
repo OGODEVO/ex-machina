@@ -130,6 +130,8 @@ async function rscFetch(path: string, params: Record<string, string> = {}): Prom
                 maxDelayMs: 10_000,
                 label: `rsc:${path}`,
                 retryIf: (err) => {
+                    // Upstream occasionally returns 304 with empty body; retry as transient.
+                    if (err.httpStatus === 304) return true;
                     if (err.httpStatus && isRetryableHttpStatus(err.httpStatus)) return true;
                     return isRetryableError(err);
                 },
@@ -156,6 +158,15 @@ function getCurrentSeasonYear(): string {
     }
 }
 
+/** Local YYYY-MM-DD (uses machine timezone, not UTC). */
+function getLocalDateIso(): string {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+}
+
 // ── Tool 1: getDailySchedule ──
 
 export const getDailyScheduleTool: ToolSpec = {
@@ -177,7 +188,7 @@ export const getDailyScheduleTool: ToolSpec = {
         required: [],
     },
     execute: async (args: { date?: string; team?: string }, _ctx) => {
-        const date = args.date ?? new Date().toISOString().split("T")[0];
+        const date = args.date ?? getLocalDateIso();
         const params: Record<string, string> = {};
 
         if (args.team) {
@@ -339,7 +350,7 @@ export const liveGameAnalysisTool: ToolSpec = {
         required: [],
     },
     execute: async (args: { gameId?: string; date?: string; team?: string }, _ctx) => {
-        const date = args.date ?? new Date().toISOString().split("T")[0];
+        const date = args.date ?? getLocalDateIso();
         const params: Record<string, string> = {};
 
         if (args.gameId) {

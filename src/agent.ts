@@ -41,6 +41,7 @@ const CONTEXT_HARD_CAP_TOKENS = Number(process.env.CONTEXT_HARD_CAP_TOKENS ?? 18
 const THREAD_TAIL_MESSAGES = Number(process.env.THREAD_TAIL_MESSAGES ?? 24);
 const LOOP_TAIL_MESSAGES = Number(process.env.LOOP_TAIL_MESSAGES ?? 18);
 const TOOL_RESULT_SUMMARY_CHARS = Number(process.env.TOOL_RESULT_SUMMARY_CHARS ?? 3_500);
+const TOOL_RESULT_VERBATIM_CHARS = Number(process.env.TOOL_RESULT_VERBATIM_CHARS ?? 30_000);
 const MAX_MESSAGE_CHARS_AFTER_TRIM = Number(process.env.MAX_MESSAGE_CHARS_AFTER_TRIM ?? 2_200);
 
 /**
@@ -231,6 +232,8 @@ export class Agent {
             const HARD_STOP_ROUNDS = 30;
             let round = 0;
             let delegatedResultReceived = false;
+            let blockedPostDelegationAttempts = 0;
+            let lastDelegatedResultText: string | null = null;
             let runtimeCheckpointWritten = false;
             let canonicalPayload: CanonicalPayloadState | null = null;
 
@@ -283,9 +286,48 @@ export class Agent {
                         && (tc.name === "searchWeb" || tc.name === "deepSearch")
                     ) {
                         console.log(`[${this.name}] Blocked ${tc.name} after delegated result; forcing finalization to user.`);
+                        blockedPostDelegationAttempts += 1;
+                        if (blockedPostDelegationAttempts >= 2 && isOrchestratorUserTurn) {
+                            const fallbackAnswer = canonicalPayload?.payload
+                                ?? lastDelegatedResultText
+                                ?? "I received delegated results but could not complete synthesis. Returning the worker output as-is.";
+                            await replySafely(createChat(fallbackAnswer));
+                            if (turnState) {
+                                turnState.replied = true;
+                                this.transitionTurnState(turnState, "REPLIED", "fallback reply after repeated blocked post-delegation tool calls");
+                                this.endTurnState(turnState.turnId);
+                            }
+                            return;
+                        }
                         messages.push({
                             role: "system",
                             content: "SYSTEM: You already received delegated results from worker agents for this user turn. Do NOT run searchWeb/deepSearch now. You MUST finalize to the user immediately via answerDirectly.",
+                        });
+                        continue;
+                    }
+                    if (
+                        this.id === secrets.orchestratorId
+                        && isExternalUserMessage
+                        && delegatedResultReceived
+                        && tc.name === "chatWithAgent"
+                    ) {
+                        console.log(`[${this.name}] Blocked follow-up chatWithAgent after delegated result; forcing user reply.`);
+                        blockedPostDelegationAttempts += 1;
+                        if (blockedPostDelegationAttempts >= 2 && isOrchestratorUserTurn) {
+                            const fallbackAnswer = canonicalPayload?.payload
+                                ?? lastDelegatedResultText
+                                ?? "I received delegated results but could not complete synthesis. Returning the worker output as-is.";
+                            await replySafely(createChat(fallbackAnswer));
+                            if (turnState) {
+                                turnState.replied = true;
+                                this.transitionTurnState(turnState, "REPLIED", "fallback reply after repeated blocked post-delegation tool calls");
+                                this.endTurnState(turnState.turnId);
+                            }
+                            return;
+                        }
+                        messages.push({
+                            role: "system",
+                            content: "SYSTEM: You already received a successful delegated result for this user turn. Do NOT ask workers follow-up questions now. You MUST immediately call answerDirectly with: (1) the data you have, and (2) a clear list of missing fields if any.",
                         });
                         continue;
                     }
@@ -326,6 +368,11 @@ export class Agent {
                         && (tc.name === "assignTasks" || tc.name === "chatWithAgent")
                     ) {
                         const extracted = extractCanonicalPayloadFromDelegatedResult(toolResult);
+                        if (extracted?.payload) {
+                            lastDelegatedResultText = extracted.payload;
+                        } else if (!toolResult.startsWith("Error:")) {
+                            lastDelegatedResultText = toolResult;
+                        }
                         if (extracted && looksLikeNbaCanonicalPayload(extracted.payload)) {
                             canonicalPayload = {
                                 sourceAgent: extracted.sourceAgent,
@@ -378,10 +425,15 @@ export class Agent {
 
                     // Append the tool call and the result to the conversation context
                     messages.push({ role: "assistant", content: `(I called tool ${tc.name} with ${tc.arguments})` });
-                    const compactToolResult = summarizeToolOutput(tc.name, toolResult, TOOL_RESULT_SUMMARY_CHARS);
+                    const preserveDelegationResult = this.id === secrets.orchestratorId
+                        && (tc.name === "assignTasks" || tc.name === "chatWithAgent" || tc.name === "facilitateDebate");
+                    const compactToolResult = preserveDelegationResult
+                        ? trimToChars(toolResult, TOOL_RESULT_VERBATIM_CHARS)
+                        : summarizeToolOutput(tc.name, toolResult, TOOL_RESULT_SUMMARY_CHARS);
+                    const toolResultPrefix = preserveDelegationResult ? "Tool Result (verbatim):" : "Tool Result:";
                     messages.push({
                         role: "user",
-                        content: `Tool Result: ${compactToolResult}\nEvaluate this result. If you need more information, call another tool. If you have finished your task, call the appropriate tool to complete it (e.g., markTaskDone). If you are chatting, you may respond directly.`
+                        content: `${toolResultPrefix} ${compactToolResult}\nEvaluate this result. If you need more information, call another tool. If you have finished your task, call the appropriate tool to complete it (e.g., markTaskDone). If you are chatting, you may respond directly.`
                     });
                 } else {
                     // 2. The LLM returned raw text
