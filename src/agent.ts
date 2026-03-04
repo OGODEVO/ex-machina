@@ -33,7 +33,7 @@ interface TurnState {
 interface CanonicalPayloadState {
     sourceAgent: string;
     payload: string;
-    contract: "none" | "nba_agent2_verbatim";
+    contract: "none" | "nba_agent2_verbatim" | "autonba_verbatim";
 }
 
 const CONTEXT_SOFT_CAP_TOKENS = Number(process.env.CONTEXT_SOFT_CAP_TOKENS ?? 150_000);
@@ -341,12 +341,12 @@ export class Agent {
                     }
                     if (turnState && tc.name === "answerDirectly") {
                         this.transitionTurnState(turnState, "SYNTHESIZING", "preparing final user reply");
-                        if (canonicalPayload?.contract === "nba_agent2_verbatim") {
+                        if (canonicalPayload?.contract === "nba_agent2_verbatim" || canonicalPayload?.contract === "autonba_verbatim") {
                             try {
                                 const parsedArgs = JSON.parse(tc.arguments ?? "{}");
                                 parsedArgs.answer = canonicalPayload.payload;
                                 tc.arguments = JSON.stringify(parsedArgs);
-                                console.log(`[${this.name}] Enforced NBA verbatim output contract from ${canonicalPayload.sourceAgent}.`);
+                                console.log(`[${this.name}] Enforced verbatim output contract (${canonicalPayload.contract}) from ${canonicalPayload.sourceAgent}.`);
                             } catch {
                                 // Let normal execution continue if tool args are malformed.
                             }
@@ -380,6 +380,17 @@ export class Agent {
                                 contract: extracted.sourceAgent === "agent2" ? "nba_agent2_verbatim" : "none",
                             };
                         }
+                    }
+                    if (
+                        this.id === secrets.orchestratorId
+                        && tc.name === "runAutonomousNbaPick"
+                        && toolResult.startsWith("[AUTONBA_FINAL]")
+                    ) {
+                        canonicalPayload = {
+                            sourceAgent: "orchestrator_autonomous",
+                            payload: stripProtocolPrefix(toolResult),
+                            contract: "autonba_verbatim",
+                        };
                     }
                     if (turnState && isDelegationTool) {
                         turnState.pendingDelegations = Math.max(0, turnState.pendingDelegations - 1);
@@ -445,10 +456,10 @@ export class Agent {
                         continue;
                     }
                     if (isOrchestratorUserTurn) {
-                        if (canonicalPayload?.contract === "nba_agent2_verbatim") {
+                        if (canonicalPayload?.contract === "nba_agent2_verbatim" || canonicalPayload?.contract === "autonba_verbatim") {
                             messages.push({
                                 role: "system",
-                                content: "SYSTEM: Output contract active. You MUST call answerDirectly and send Agent 2 canonical NBA payload verbatim with no summarization or reformatting.",
+                                content: "SYSTEM: Output contract active. You MUST call answerDirectly and send the canonical payload verbatim with no summarization or reformatting.",
                             });
                             continue;
                         }

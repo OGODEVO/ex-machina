@@ -3,12 +3,12 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Agent } from "./agent.js";
 import { secrets, getAgentShellMode, redactNatsUrl } from "./config.js";
-import { assignTasksTool, answerDirectlyTool, facilitateDebateTool } from "./tools/orchestratorTools.js";
+import { assignTasksTool, answerDirectlyTool, facilitateDebateTool, runAutonomousNbaPickTool } from "./tools/orchestratorTools.js";
 import { markTaskDoneTool, askQuestionTool, reportErrorTool } from "./tools/workerTools.js";
 import { chatWithAgentTool, discoverAgentsTool, endConversationTool } from "./tools/sharedTools.js";
 import { searchWebTool, deepSearchTool } from "./tools/searchTools.js";
 import { createShellTool } from "./tools/terminalTools.js";
-import { scrapePageTool, browserActionTool, closeBrowser } from "./tools/browserTools.js";
+import { scrapePageTool, browserActionTool, getRotowireLineupsTool, closeBrowser } from "./tools/browserTools.js";
 import { getDailyScheduleTool, preGameAnalysisTool, liveGameAnalysisTool } from "./tools/nbaTools.js";
 import type { ToolSpec } from "./tools/registry.js";
 
@@ -51,7 +51,7 @@ async function main() {
         name: secrets.orchestratorName,
         systemPrompt: loadPrompt("orchestrator.txt") + `\n\n${agentProfiles}`,
         capabilities: ["orchestration", "search"],
-        tools: [assignTasksTool, answerDirectlyTool, facilitateDebateTool, chatWithAgentTool, discoverAgentsTool, endConversationTool, searchWebTool, deepSearchTool],
+        tools: [assignTasksTool, answerDirectlyTool, facilitateDebateTool, runAutonomousNbaPickTool, chatWithAgentTool, discoverAgentsTool, endConversationTool, searchWebTool, deepSearchTool],
     });
 
     // 2. Agent 1
@@ -78,7 +78,7 @@ async function main() {
         name: "Agent 3",
         systemPrompt: loadPrompt("agent3.txt"),
         capabilities: ["review", "critique", "browser"],
-        tools: [...buildWorkerTools("agent3"), scrapePageTool, browserActionTool],
+        tools: [...buildWorkerTools("agent3"), scrapePageTool, browserActionTool, getRotowireLineupsTool],
     });
 
     // Start all agents concurrently
