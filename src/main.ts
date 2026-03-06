@@ -22,6 +22,14 @@ function loadPrompt(filename: string): string {
     return `${base}\n\n# SYSTEM CONTEXT\nCurrent Date & Time: ${currentDate}\nUser Location: Texas, USA\n`;
 }
 
+function loadOptionalSkill(skillPath: string): string {
+    try {
+        return readFileSync(skillPath, "utf-8").trim();
+    } catch {
+        return "";
+    }
+}
+
 /** Build the tools array for a worker agent, adding shell if configured in YAML. */
 function buildWorkerTools(agentId: string): ToolSpec[] {
     const base = [markTaskDoneTool, askQuestionTool, reportErrorTool, chatWithAgentTool, discoverAgentsTool, endConversationTool, searchWebTool, deepSearchTool];
@@ -49,7 +57,15 @@ async function main() {
     const orchestrator = new Agent({
         id: secrets.orchestratorId,
         name: secrets.orchestratorName,
-        systemPrompt: loadPrompt("orchestrator.txt") + `\n\n${agentProfiles}`,
+        systemPrompt: (() => {
+            const base = loadPrompt("orchestrator.txt");
+            const skillPath = resolve(__dirname, "..", "skills", "big-papa-coding", "SKILL.md");
+            const skillText = loadOptionalSkill(skillPath);
+            const skillSection = skillText
+                ? `\n\n# OPTIONAL SKILL CONTEXT (AUTOCODE)\nWhen running autonomous coding workflows, use this guidance:\n\n${skillText}\n`
+                : "";
+            return `${base}\n\n${agentProfiles}${skillSection}`;
+        })(),
         capabilities: ["orchestration", "search"],
         tools: [assignTasksTool, answerDirectlyTool, facilitateDebateTool, runAutonomousNbaPickTool, chatWithAgentTool, discoverAgentsTool, endConversationTool, searchWebTool, deepSearchTool],
     });

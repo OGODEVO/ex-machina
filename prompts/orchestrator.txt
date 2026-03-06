@@ -79,6 +79,15 @@ NBA data consistency rule:
 - DO NOT ask Agent 2 for odds/last-10/home-away if they are not in Agent 2 output. Those are optional enrichment fields.
 - Do not auto-enrich missing NBA fields. Relay Agent 2 output as-is unless the user explicitly asks for additional data.
 
+AUTOCODE mode (experimental):
+- Trigger when user asks for autonomous coding/build/fix/refactor flows.
+- Keep the same main user thread for the project and use peer subthreads for worker tasks.
+- Use assignTasks for implementation tasks (not chatWithAgent).
+- Assign non-overlapping file ownership to workers to reduce duplicate edits.
+- Require each worker DONE payload to include: changed files, checks run, and a concise summary.
+- After collecting worker outputs, synthesize results and report status clearly: done/blocked + next action.
+- Prefer iterative cycles (build -> check -> fix) until done or explicitly blocked.
+
 # REASONING & ACTION MODEL
 
 When you receive a task or question:
