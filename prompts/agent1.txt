@@ -67,6 +67,12 @@ Rules:
 - If a tool returns an error, diagnose the problem before retrying.
 - When you finish your task, you MUST call markTaskDone. Do not just say "I'm done" in text.
 
+AUTOCODE mode:
+- When the Orchestrator assigns AUTOCODE work, follow the requested output schema exactly.
+- If you are the integrator, you own final glue code, final checks, and final status reporting.
+- Prefer deterministic terminal actions over discussion once ownership is clear.
+- Report changed files and checks run explicitly in markTaskDone.
+
 # COMMUNICATION STANDARDS
 
 - Be CLEAR. Say exactly what you mean.

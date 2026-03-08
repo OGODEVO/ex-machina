@@ -2,6 +2,7 @@ import type { ToolSpec } from "./registry.js";
 import { createAssign, createChat, isProtocolMessage } from "../protocol.js";
 import { NetworkBridge } from "../networkBridge.js";
 import { searchWebTool } from "./searchTools.js";
+import { resolve, relative } from "node:path";
 
 /**
  * Tool: answerDirectly
@@ -560,6 +561,370 @@ export const runAutonomousNbaPickTool: ToolSpec = {
     },
 };
 
+/**
+ * Tool: runAutonomousCode
+ * Deterministic autonomous coding pipeline:
+ *   Worker planning -> non-overlapping ownership -> worker implementation -> Agent1 integration/checks.
+ */
+export const runAutonomousCodeTool: ToolSpec = {
+    name: "runAutonomousCode",
+    description:
+        "Run a deterministic autonomous coding workflow for a target workspace inside this repo: plan, assign non-overlapping work to agents, integrate with Agent1, run checks, and return a final build report.",
+    parameters: {
+        type: "object",
+        properties: {
+            goal: {
+                type: "string",
+                description: "What to build, change, or fix.",
+            },
+            workspacePath: {
+                type: "string",
+                description: "Absolute or repo-relative path to the target coding workspace. Must be under the current project root.",
+            },
+        },
+        required: ["goal"],
+    },
+    execute: async (args: { goal: string; workspacePath?: string }, ctx) => {
+        if (!ctx.bridge || !ctx.threadId || !ctx.agentId) {
+            throw new Error("Missing network context.");
+        }
+
+        const goal = args.goal.trim();
+        const projectRoot = process.cwd();
+        const workspacePath = resolve(projectRoot, args.workspacePath?.trim() || "workspace/autocode");
+        if (!isPathWithinRoot(workspacePath, projectRoot)) {
+            return [
+                `[AUTOCODE_FINAL]`,
+                `Status: BLOCKED`,
+                `Stage: setup`,
+                `Reason: workspacePath must stay inside the project root.`,
+                `Workspace: ${workspacePath}`,
+            ].join("\n");
+        }
+
+        const runId = `autocode_${Date.now()}`;
+        const relativeWorkspace = relative(projectRoot, workspacePath) || ".";
+
+        const requestWorker = async (
+            agentId: "agent1" | "agent2" | "agent3",
+            instructions: string,
+            timeoutMs = 600_000
+        ): Promise<{ ok: boolean; text: string; error?: string }> => {
+            const peerThreadId = NetworkBridge.buildPeerThreadId(ctx.threadId!, ctx.agentId!, agentId);
+            try {
+                const reply = await ctx.bridge!.requestMessage(
+                    agentId,
+                    peerThreadId,
+                    createAssign(agentId, instructions),
+                    { timeoutMs }
+                );
+                const protocol = parseProtocolPayload(reply.payload);
+                if (!protocol) return { ok: false, text: "", error: `invalid payload from ${agentId}` };
+                if (protocol.type === "blocked") return { ok: false, text: protocol.text ?? "", error: `blocked: ${protocol.text}` };
+                if (protocol.type === "done" || protocol.type === "chat") return { ok: true, text: protocol.text ?? "" };
+                return { ok: false, text: "", error: `unsupported payload type: ${protocol.type}` };
+            } catch (err: any) {
+                return { ok: false, text: "", error: err?.message ?? String(err) };
+            }
+        };
+
+        const planningInstructions = (agentId: "agent2" | "agent3", role: string) => [
+            `AUTOCODE MODE (${runId})`,
+            `Goal: ${goal}`,
+            `Workspace: ${workspacePath}`,
+            `Role: ${role}`,
+            `This is a PLANNING pass only. Do NOT edit files yet.`,
+            `Use runTerminalCommand to inspect the repo and understand structure.`,
+            `Prefer rg, ls, cat, npm, node, git status. Keep it lightweight.`,
+            `Return EXACTLY this format via markTaskDone:`,
+            `PLAN_ROLE: <one line>`,
+            `OWNED_PATHS:`,
+            `- <path>`,
+            `- <path>`,
+            `CHECKS:`,
+            `- <command>`,
+            `- <command>`,
+            `NOTES:`,
+            `- <note>`,
+            `- <note>`,
+        ].join("\n");
+
+        const plan2 = await requestWorker("agent2", planningInstructions("agent2", "implementation planner"));
+        const plan3 = await requestWorker("agent3", planningInstructions("agent3", "test/review/runtime planner"));
+        if (!plan2.ok || !plan3.ok) {
+            return [
+                `[AUTOCODE_FINAL]`,
+                `Status: BLOCKED`,
+                `Stage: planning`,
+                `Agent2: ${plan2.ok ? "ok" : plan2.error}`,
+                `Agent3: ${plan3.ok ? "ok" : plan3.error}`,
+            ].join("\n");
+        }
+
+        const ownership = resolveAutocodeOwnership(workspacePath, plan2.text, plan3.text);
+
+        const implInstructions = (
+            agentId: "agent2" | "agent3",
+            ownedPaths: string[],
+            peerPlan: string
+        ) => [
+            `AUTOCODE MODE (${runId})`,
+            `Goal: ${goal}`,
+            `Workspace: ${workspacePath}`,
+            `Your owned paths:`,
+            ...ownedPaths.map((p) => `- ${p}`),
+            `Hard rules:`,
+            `- You may edit ONLY your owned paths.`,
+            `- Use runTerminalCommand in workspace cwd: ${workspacePath}`,
+            `- If you need to touch another file, use reportError instead of freelancing.`,
+            `- Keep changes scoped to your owned area.`,
+            `Peer planning context:`,
+            peerPlan,
+            `Return EXACTLY this format via markTaskDone:`,
+            `STATUS: DONE`,
+            `CHANGED_FILES:`,
+            `- <path>`,
+            `CHECKS_RUN:`,
+            `- <command> => <status>`,
+            `SUMMARY:`,
+            `<short summary>`,
+        ].join("\n");
+
+        const impl2 = await requestWorker("agent2", implInstructions("agent2", ownership.agent2, plan3.text));
+        const impl3 = await requestWorker("agent3", implInstructions("agent3", ownership.agent3, plan2.text));
+        if (!impl2.ok || !impl3.ok) {
+            return [
+                `[AUTOCODE_FINAL]`,
+                `Status: BLOCKED`,
+                `Stage: implementation`,
+                `Agent2: ${impl2.ok ? "ok" : impl2.error}`,
+                `Agent3: ${impl3.ok ? "ok" : impl3.error}`,
+                ``,
+                `=== PLAN AGENT2 ===`,
+                plan2.text,
+                ``,
+                `=== PLAN AGENT3 ===`,
+                plan3.text,
+            ].join("\n");
+        }
+
+        const integrateInstructions = [
+            `AUTOCODE MODE (${runId})`,
+            `Goal: ${goal}`,
+            `Workspace: ${workspacePath}`,
+            `You are the integrator.`,
+            `Agent2 completed scoped work. Agent3 completed scoped work.`,
+            `Your job: inspect their reported changes, integrate glue code, run checks, fix obvious integration issues, and return final status.`,
+            `Agent2 plan/result:`,
+            plan2.text,
+            impl2.text,
+            `Agent3 plan/result:`,
+            plan3.text,
+            impl3.text,
+            `Use runTerminalCommand in cwd ${workspacePath}.`,
+            `Return EXACTLY this format via markTaskDone:`,
+            `STATUS: DONE or BLOCKED`,
+            `CHANGED_FILES:`,
+            `- <path>`,
+            `CHECKS_RUN:`,
+            `- <command> => <status>`,
+            `SUMMARY:`,
+            `<short summary>`,
+            `RISKS:`,
+            `- <risk>`,
+        ].join("\n");
+
+        const integrate = await requestWorker("agent1", integrateInstructions);
+        if (!integrate.ok) {
+            return [
+                `[AUTOCODE_FINAL]`,
+                `Status: BLOCKED`,
+                `Stage: integration`,
+                `Reason: ${integrate.error}`,
+                ``,
+                `=== AGENT2 RESULT ===`,
+                impl2.text,
+                ``,
+                `=== AGENT3 RESULT ===`,
+                impl3.text,
+            ].join("\n");
+        }
+
+        let repair2: { ok: boolean; text: string; error?: string } | null = null;
+        let repair3: { ok: boolean; text: string; error?: string } | null = null;
+        let reintegrate: { ok: boolean; text: string; error?: string } | null = null;
+
+        if (parseAutocodeStatus(integrate.text) === "BLOCKED") {
+            const repairInstructions = (
+                ownedPaths: string[],
+                blockedReport: string
+            ) => [
+                `AUTOCODE MODE (${runId})`,
+                `Goal: ${goal}`,
+                `Workspace: ${workspacePath}`,
+                `This is REPAIR PASS 1 after Agent1 blocked integration.`,
+                `Your owned paths:`,
+                ...ownedPaths.map((p) => `- ${p}`),
+                `Hard rules:`,
+                `- You may edit ONLY your owned paths.`,
+                `- Fix only issues that fall inside your owned area.`,
+                `- Use runTerminalCommand in workspace cwd: ${workspacePath}`,
+                `- If the issue is outside your area, keep your files untouched and say so in SUMMARY.`,
+                `Blocked integration report from Agent1:`,
+                blockedReport,
+                `Return EXACTLY this format via markTaskDone:`,
+                `STATUS: DONE or BLOCKED`,
+                `CHANGED_FILES:`,
+                `- <path>`,
+                `CHECKS_RUN:`,
+                `- <command> => <status>`,
+                `SUMMARY:`,
+                `<short summary>`,
+            ].join("\n");
+
+            repair2 = await requestWorker("agent2", repairInstructions(ownership.agent2, integrate.text));
+            repair3 = await requestWorker("agent3", repairInstructions(ownership.agent3, integrate.text));
+
+            if (!repair2.ok || !repair3.ok) {
+                return [
+                    `[AUTOCODE_FINAL]`,
+                    `Status: BLOCKED`,
+                    `Stage: repair`,
+                    `Workspace: ${relativeWorkspace}`,
+                    `Goal: ${goal}`,
+                    `Agent2: ${repair2.ok ? "ok" : repair2.error}`,
+                    `Agent3: ${repair3.ok ? "ok" : repair3.error}`,
+                    ``,
+                    `=== OWNERSHIP ===`,
+                    `Agent2 writes: ${ownership.agent2.join(", ") || "(none)"}`,
+                    `Agent3 writes: ${ownership.agent3.join(", ") || "(none)"}`,
+                    ``,
+                    `=== AGENT1 INITIAL INTEGRATION ===`,
+                    integrate.text,
+                    ``,
+                    `=== AGENT2 REPAIR RESULT ===`,
+                    repair2.text,
+                    ``,
+                    `=== AGENT3 REPAIR RESULT ===`,
+                    repair3.text,
+                ].join("\n");
+            }
+
+            const reintegrateInstructions = [
+                `AUTOCODE MODE (${runId})`,
+                `Goal: ${goal}`,
+                `Workspace: ${workspacePath}`,
+                `You are the integrator. This is REPAIR PASS 1.`,
+                `Re-run integration after the worker repair pass, run checks again, and return final status.`,
+                `Initial blocked integration report:`,
+                integrate.text,
+                `Agent2 repair result:`,
+                repair2.text,
+                `Agent3 repair result:`,
+                repair3.text,
+                `Use runTerminalCommand in cwd ${workspacePath}.`,
+                `Return EXACTLY this format via markTaskDone:`,
+                `STATUS: DONE or BLOCKED`,
+                `CHANGED_FILES:`,
+                `- <path>`,
+                `CHECKS_RUN:`,
+                `- <command> => <status>`,
+                `SUMMARY:`,
+                `<short summary>`,
+                `RISKS:`,
+                `- <risk>`,
+            ].join("\n");
+
+            reintegrate = await requestWorker("agent1", reintegrateInstructions);
+        }
+
+        const finalIntegration = reintegrate ?? integrate;
+        const finalIntegrationStatus = finalIntegration.ok
+            ? parseAutocodeStatus(finalIntegration.text)
+            : "BLOCKED";
+        const agent1Writes = finalIntegration.ok ? parseChangedFiles(finalIntegration.text) : [];
+
+        if (!finalIntegration.ok || finalIntegrationStatus !== "DONE") {
+            return [
+                `[AUTOCODE_FINAL]`,
+                `Status: BLOCKED`,
+                `Stage: integration`,
+                `Workspace: ${relativeWorkspace}`,
+                `Goal: ${goal}`,
+                `Reason: ${finalIntegration.ok ? "Agent1 integration remained blocked after repair pass." : finalIntegration.error ?? "Agent1 integration failed."}`,
+                ``,
+                `=== WRITE MAP ===`,
+                `Agent2 writes: ${ownership.agent2.join(", ") || "(none)"}`,
+                `Agent3 writes: ${ownership.agent3.join(", ") || "(none)"}`,
+                `Agent1 writes: ${agent1Writes.join(", ") || "(none reported)"}`,
+                ``,
+                `=== AGENT2 RESULT ===`,
+                impl2.text,
+                ``,
+                `=== AGENT3 RESULT ===`,
+                impl3.text,
+                ``,
+                `=== AGENT1 INITIAL INTEGRATION ===`,
+                integrate.text,
+                ...(repair2 && repair3 ? [
+                    ``,
+                    `=== AGENT2 REPAIR RESULT ===`,
+                    repair2.text,
+                    ``,
+                    `=== AGENT3 REPAIR RESULT ===`,
+                    repair3.text,
+                    ``,
+                    `=== AGENT1 RE-INTEGRATION ===`,
+                    finalIntegration.text,
+                ] : []),
+            ].join("\n");
+        }
+
+        return [
+            `[AUTOCODE_FINAL]`,
+            `Status: DONE`,
+            `Run ID: ${runId}`,
+            `Workspace: ${relativeWorkspace}`,
+            `Goal: ${goal}`,
+            ``,
+            `=== OWNERSHIP ===`,
+            `Agent2: ${ownership.agent2.join(", ") || "(none)"}`,
+            `Agent3: ${ownership.agent3.join(", ") || "(none)"}`,
+            ``,
+            `=== WRITE MAP ===`,
+            `Agent2 writes: ${ownership.agent2.join(", ") || "(none)"}`,
+            `Agent3 writes: ${ownership.agent3.join(", ") || "(none)"}`,
+            `Agent1 writes: ${agent1Writes.join(", ") || "(none reported)"}`,
+            ``,
+            `=== AGENT2 PLAN ===`,
+            plan2.text,
+            ``,
+            `=== AGENT3 PLAN ===`,
+            plan3.text,
+            ``,
+            `=== AGENT2 RESULT ===`,
+            impl2.text,
+            ``,
+            `=== AGENT3 RESULT ===`,
+            impl3.text,
+            ``,
+            `=== AGENT1 INITIAL INTEGRATION ===`,
+            integrate.text,
+            ...(repair2 && repair3 && reintegrate ? [
+                ``,
+                `=== AGENT2 REPAIR RESULT ===`,
+                repair2.text,
+                ``,
+                `=== AGENT3 REPAIR RESULT ===`,
+                repair3.text,
+                ``,
+                `=== AGENT1 RE-INTEGRATION ===`,
+                reintegrate.text,
+            ] : []),
+        ].join("\n");
+    },
+};
+
 type MetricQueryKey =
     | "odds"
     | "ats_team_a"
@@ -650,6 +1015,101 @@ function hasH2HNumbers(text: string): boolean {
     const hasLast3 = /last 3|last three/i.test(text);
     const hasGameNumbers = hasScorePair(text) || hasRecordPair(text);
     return hasH2hTerms && hasLast3 && hasGameNumbers && !looksLikeSearchFailure(text);
+}
+
+function isPathWithinRoot(candidate: string, root: string): boolean {
+    const normalizedRoot = resolve(root);
+    const normalizedCandidate = resolve(candidate);
+    return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}/`);
+}
+
+function parseOwnedPaths(planText: string, workspacePath: string): string[] {
+    const lines = planText.split("\n");
+    const result: string[] = [];
+    let inOwnedPaths = false;
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (/^OWNED_PATHS:/i.test(line)) {
+            inOwnedPaths = true;
+            continue;
+        }
+        if (inOwnedPaths && /^[A-Z_]+:/i.test(line) && !line.startsWith("-")) break;
+        if (!inOwnedPaths) continue;
+        if (!line.startsWith("-")) continue;
+        const value = line.replace(/^-+\s*/, "").trim();
+        if (!value) continue;
+        const resolved = resolve(workspacePath, value);
+        if (isPathWithinRoot(resolved, process.cwd())) {
+            result.push(resolved);
+        }
+    }
+
+    return normalizeOwnedPaths(result);
+}
+
+function normalizeOwnedPaths(paths: string[]): string[] {
+    const unique = Array.from(new Set(paths.map((p) => resolve(p))));
+    unique.sort((a, b) => a.length - b.length);
+
+    const normalized: string[] = [];
+    for (const candidate of unique) {
+        if (normalized.some((existing) => pathsOverlap(existing, candidate))) continue;
+        normalized.push(candidate);
+    }
+
+    return normalized;
+}
+
+function pathsOverlap(a: string, b: string): boolean {
+    const ra = resolve(a);
+    const rb = resolve(b);
+    return ra === rb || ra.startsWith(`${rb}/`) || rb.startsWith(`${ra}/`);
+}
+
+function resolveAutocodeOwnership(
+    workspacePath: string,
+    plan2Text: string,
+    plan3Text: string
+): { agent2: string[]; agent3: string[] } {
+    const proposed2 = normalizeOwnedPaths(parseOwnedPaths(plan2Text, workspacePath));
+    const proposed3 = normalizeOwnedPaths(parseOwnedPaths(plan3Text, workspacePath));
+
+    const agent2 = proposed2.length > 0 ? proposed2 : [resolve(workspacePath, "src")];
+    const filtered3 = proposed3.filter((p) => !agent2.some((owned) => pathsOverlap(owned, p)));
+    const agent3 = filtered3.length > 0
+        ? normalizeOwnedPaths(filtered3)
+        : normalizeOwnedPaths([resolve(workspacePath, "tests"), resolve(workspacePath, "docs")])
+            .filter((p) => !agent2.some((owned) => pathsOverlap(owned, p)));
+
+    return { agent2, agent3 };
+}
+
+function parseAutocodeStatus(text: string): "DONE" | "BLOCKED" | "UNKNOWN" {
+    const explicit = matchOne(text, /^STATUS:\s*(DONE|BLOCKED)\s*$/im);
+    if (explicit === "DONE" || explicit === "BLOCKED") return explicit;
+    if (/task blocked|blocked/i.test(text)) return "BLOCKED";
+    return "UNKNOWN";
+}
+
+function parseChangedFiles(text: string): string[] {
+    const lines = text.split("\n");
+    const result: string[] = [];
+    let inChangedFiles = false;
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (/^CHANGED_FILES:/i.test(line)) {
+            inChangedFiles = true;
+            continue;
+        }
+        if (inChangedFiles && /^[A-Z_]+:/i.test(line) && !line.startsWith("-")) break;
+        if (!inChangedFiles || !line.startsWith("-")) continue;
+        const value = line.replace(/^-+\s*/, "").trim();
+        if (value) result.push(value);
+    }
+
+    return Array.from(new Set(result));
 }
 
 function parseDebateVote(

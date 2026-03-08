@@ -3,7 +3,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Agent } from "./agent.js";
 import { secrets, getAgentShellMode, redactNatsUrl } from "./config.js";
-import { assignTasksTool, answerDirectlyTool, facilitateDebateTool, runAutonomousNbaPickTool } from "./tools/orchestratorTools.js";
+import { assignTasksTool, answerDirectlyTool, facilitateDebateTool, runAutonomousCodeTool, runAutonomousNbaPickTool } from "./tools/orchestratorTools.js";
 import { markTaskDoneTool, askQuestionTool, reportErrorTool } from "./tools/workerTools.js";
 import { chatWithAgentTool, discoverAgentsTool, endConversationTool } from "./tools/sharedTools.js";
 import { searchWebTool, deepSearchTool } from "./tools/searchTools.js";
@@ -50,8 +50,8 @@ async function main() {
     const agentProfiles = `
 # AVAILABLE AGENTS
 - **Agent 1** (ID: agent1): Capabilities: [terminal-execution, bash, python, coding]. If the user asks to run a command, install software, or execute code, you MUST use assignTasks to send it to Agent 1. Do NOT use chatWithAgent for execution tasks.
-- **Agent 2** (ID: agent2): Capabilities: [research, analysis, nba-data]
-- **Agent 3** (ID: agent3): Capabilities: [review, critique, browser]
+- **Agent 2** (ID: agent2): Capabilities: [research, analysis, nba-data, terminal-execution, coding]
+- **Agent 3** (ID: agent3): Capabilities: [review, critique, browser, terminal-execution, coding]
 `;
 
     const orchestrator = new Agent({
@@ -67,7 +67,7 @@ async function main() {
             return `${base}\n\n${agentProfiles}${skillSection}`;
         })(),
         capabilities: ["orchestration", "search"],
-        tools: [assignTasksTool, answerDirectlyTool, facilitateDebateTool, runAutonomousNbaPickTool, chatWithAgentTool, discoverAgentsTool, endConversationTool, searchWebTool, deepSearchTool],
+        tools: [assignTasksTool, answerDirectlyTool, facilitateDebateTool, runAutonomousNbaPickTool, runAutonomousCodeTool, chatWithAgentTool, discoverAgentsTool, endConversationTool, searchWebTool, deepSearchTool],
     });
 
     // 2. Agent 1
@@ -84,7 +84,7 @@ async function main() {
         id: "agent2",
         name: "Agent 2",
         systemPrompt: loadPrompt("agent2.txt"),
-        capabilities: ["research", "analysis", "nba-data"],
+        capabilities: ["research", "analysis", "nba-data", "execution", "coding"],
         tools: [...buildWorkerTools("agent2"), getDailyScheduleTool, preGameAnalysisTool, liveGameAnalysisTool],
     });
 
@@ -93,7 +93,7 @@ async function main() {
         id: "agent3",
         name: "Agent 3",
         systemPrompt: loadPrompt("agent3.txt"),
-        capabilities: ["review", "critique", "browser"],
+        capabilities: ["review", "critique", "browser", "execution", "coding"],
         tools: [...buildWorkerTools("agent3"), scrapePageTool, browserActionTool, getRotowireLineupsTool],
     });
 

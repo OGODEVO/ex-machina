@@ -33,7 +33,7 @@ interface TurnState {
 interface CanonicalPayloadState {
     sourceAgent: string;
     payload: string;
-    contract: "none" | "nba_agent2_verbatim" | "autonba_verbatim";
+    contract: "none" | "nba_agent2_verbatim" | "autonba_verbatim" | "autocode_verbatim";
 }
 
 const CONTEXT_SOFT_CAP_TOKENS = Number(process.env.CONTEXT_SOFT_CAP_TOKENS ?? 150_000);
@@ -218,10 +218,11 @@ export class Agent {
             const currentTime = new Date().toISOString();
             const timePrompt = `[SYSTEM TIME ALIGNMENT: The current exact time is ${currentTime}]`;
 
-            const historyPrompt = await this.buildHistoryPrompt(message.thread_id);
+            const historyMessages = await this.buildHistoryMessages(message.thread_id);
 
             let messages: ChatMessage[] = [
-                { role: "system", content: `${this.systemPrompt}\n\n${timePrompt}${historyPrompt}` },
+                { role: "system", content: `${this.systemPrompt}\n\n${timePrompt}` },
+                ...historyMessages,
                 { role: "user", content: textBlock },
             ];
 
@@ -341,7 +342,11 @@ export class Agent {
                     }
                     if (turnState && tc.name === "answerDirectly") {
                         this.transitionTurnState(turnState, "SYNTHESIZING", "preparing final user reply");
-                        if (canonicalPayload?.contract === "nba_agent2_verbatim" || canonicalPayload?.contract === "autonba_verbatim") {
+                        if (
+                            canonicalPayload?.contract === "nba_agent2_verbatim"
+                            || canonicalPayload?.contract === "autonba_verbatim"
+                            || canonicalPayload?.contract === "autocode_verbatim"
+                        ) {
                             try {
                                 const parsedArgs = JSON.parse(tc.arguments ?? "{}");
                                 parsedArgs.answer = canonicalPayload.payload;
@@ -390,6 +395,17 @@ export class Agent {
                             sourceAgent: "orchestrator_autonomous",
                             payload: stripProtocolPrefix(toolResult),
                             contract: "autonba_verbatim",
+                        };
+                    }
+                    if (
+                        this.id === secrets.orchestratorId
+                        && tc.name === "runAutonomousCode"
+                        && toolResult.startsWith("[AUTOCODE_FINAL]")
+                    ) {
+                        canonicalPayload = {
+                            sourceAgent: "orchestrator_autocode",
+                            payload: stripProtocolPrefix(toolResult),
+                            contract: "autocode_verbatim",
                         };
                     }
                     if (turnState && isDelegationTool) {
@@ -456,7 +472,11 @@ export class Agent {
                         continue;
                     }
                     if (isOrchestratorUserTurn) {
-                        if (canonicalPayload?.contract === "nba_agent2_verbatim" || canonicalPayload?.contract === "autonba_verbatim") {
+                        if (
+                            canonicalPayload?.contract === "nba_agent2_verbatim"
+                            || canonicalPayload?.contract === "autonba_verbatim"
+                            || canonicalPayload?.contract === "autocode_verbatim"
+                        ) {
                             messages.push({
                                 role: "system",
                                 content: "SYSTEM: Output contract active. You MUST call answerDirectly and send the canonical payload verbatim with no summarization or reformatting.",
@@ -518,13 +538,13 @@ export class Agent {
         }
     }
 
-    private async buildHistoryPrompt(threadId?: string): Promise<string> {
-        if (!threadId) return "";
+    private async buildHistoryMessages(threadId?: string): Promise<ChatMessage[]> {
+        if (!threadId) return [];
 
         try {
             const history = await this.network.loadThreadWindow(threadId);
             if (!history || !Array.isArray(history.messages) || history.messages.length === 0) {
-                return "";
+                return [];
             }
 
             const sorted = [...history.messages].sort((a: any, b: any) => {
@@ -535,7 +555,7 @@ export class Agent {
 
             // Exclude current incoming message if it is already persisted in thread history.
             const priorMessages = sorted.length > 1 ? sorted.slice(0, -1) : [];
-            if (priorMessages.length === 0) return "";
+            if (priorMessages.length === 0) return [];
 
             let latestCheckpointSummary = "";
             let latestCheckpointIndex = -1;
@@ -565,19 +585,25 @@ export class Agent {
                 })
                 .join("\n");
 
-            const sections: string[] = [];
+            const historyMessages: ChatMessage[] = [];
             if (latestCheckpointSummary) {
-                sections.push(`Latest checkpoint summary:\n${trimToChars(latestCheckpointSummary, 3000)}`);
+                historyMessages.push({
+                    role: "assistant",
+                    content: `THREAD SUMMARY:\n${trimToChars(latestCheckpointSummary, 3000)}`,
+                });
             }
             if (renderedTail) {
-                sections.push(`Recent tail messages (${Math.max(1, THREAD_TAIL_MESSAGES)}):\n${renderedTail}`);
+                historyMessages.push({
+                    role: "assistant",
+                    content: `RECENT CONTEXT (${Math.max(1, THREAD_TAIL_MESSAGES)} messages):\n${renderedTail}`,
+                });
             }
-            if (sections.length === 0) return "";
+            if (historyMessages.length === 0) return [];
 
-            return `\n\n--- THREAD CONTEXT (Checkpoint + Tail) ---\n${sections.join("\n\n")}\n------------------------------------------`;
+            return historyMessages;
         } catch {
             console.log(`[${this.name}] Warning: Could not load thread history for ${threadId}`);
-            return "";
+            return [];
         }
     }
 
@@ -603,7 +629,7 @@ export class Agent {
 
         messages = [
             messages[0],
-            { role: "system", content: `CONTEXT CHECKPOINT SUMMARY:\n${carryover}` },
+            { role: "assistant", content: `CONTEXT CHECKPOINT SUMMARY:\n${carryover}` },
             ...messages.slice(tailStart),
         ];
 
@@ -622,7 +648,7 @@ export class Agent {
             checkpointWritten = await this.writeRuntimeCheckpoint(threadId, carryover);
             if (checkpointWritten) {
                 const shorterTailStart = Math.max(1, messages.length - 10);
-                messages = [messages[0], { role: "system", content: `CONTEXT CHECKPOINT SUMMARY:\n${carryover}` }, ...messages.slice(shorterTailStart)];
+                messages = [messages[0], { role: "assistant", content: `CONTEXT CHECKPOINT SUMMARY:\n${carryover}` }, ...messages.slice(shorterTailStart)];
             }
         }
 

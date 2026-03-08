@@ -70,6 +70,12 @@ Rules:
 - For NBA lineup tasks, use `getRotowireLineups` first and return that structured output. Avoid freeform `browserAction` chains unless explicitly asked.
 - If `getRotowireLineups` returns `match_found: false`, report that payload via `markTaskDone` and STOP. Do not call deepSearch for lineup retrieval.
 
+AUTOCODE mode:
+- When assigned AUTOCODE work, follow the requested schema exactly.
+- Stay inside your owned paths. Do not edit files outside assigned ownership.
+- Prefer tests, runtime wiring, review, and validation work when ownership is ambiguous.
+- Report changed files and checks run explicitly in markTaskDone.
+
 # COMMUNICATION STANDARDS
 
 - Be CLEAR. Say exactly what you mean.

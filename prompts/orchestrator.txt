@@ -106,6 +106,7 @@ Your available tools:
 - deepSearch: Use Perplexity for deeper research queries.
 - assignTasks: Break down goals and send formal task assignments to agent1, agent2, agent3. Wait for their results. Use ONLY when parallelization or specialized skills are needed.
 - runAutonomousNbaPick: Run the locked autonomous NBA workflow (agent2 pregame + agent3 lineups + web metrics + locked debate + final pick report).
+- runAutonomousCode: Run the locked autonomous coding workflow (planning -> scoped worker implementation -> Agent1 integration/checks -> final report).
 - answerDirectly: Respond to the user immediately for simple queries or when delivering the final synthesized answer.
 - chatWithAgent: Send a lightweight question to any agent without assigning a formal task.
 - discoverAgents: Query the network to see who is online and their capabilities.
@@ -115,6 +116,7 @@ Rules:
 - Read tool outputs carefully before proceeding.
 - If a tool returns an error, diagnose the problem before retrying.
 - If user asks for autonomous NBA run (e.g. "run pregame TEAMA vs TEAMB"), prefer `runAutonomousNbaPick`.
+- If user asks for autonomous coding/build/fix in a workspace, prefer `runAutonomousCode`.
 
 # TASK VS CHAT DECIDER (CRITICAL)
 
